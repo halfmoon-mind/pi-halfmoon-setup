@@ -40,7 +40,9 @@ writeFileSync(
 			if (step.call) await callTool(step.call);
 			if (step.stderr) await write(process.stderr, step.stderr);
 			if (step.lines) await write(process.stdout, step.lines.map((l) => JSON.stringify(l) + "\\n").join(""));
-			fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(seen));
+			// Written aside and renamed in, so a test reading it mid-write never sees an empty file.
+			fs.writeFileSync(${JSON.stringify(record + ".tmp")}, JSON.stringify(seen));
+			fs.renameSync(${JSON.stringify(record + ".tmp")}, ${JSON.stringify(record)});
 			if ("exit" in step) process.exit(step.exit);
 		}
 	})();`,
