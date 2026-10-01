@@ -8,6 +8,7 @@ A [pi](https://pi.dev) package with a model router and role-based subagents, sha
 |---|---|
 | `extensions/router.ts` | `router/auto` virtual model. Classifies the first user message **once**, then keeps that model for the whole session, so routing never invalidates the prompt cache. |
 | `extensions/subagent/` | `subagent` tool, vendored from pi's example extension. Also loads the agents in this package. |
+| `extensions/pi-claude-cli/` | `pi-claude-cli` provider: runs Claude models through the logged-in `claude` CLI. Vendored from [pi-claude-cli](https://github.com/rchern/pi-claude-cli) 0.3.1 (MIT) and patched for pi 0.99. |
 | `agents/` | Role → model assignments (see below). A user agent (`~/.pi/agent/agents`) or project agent (`.pi/agents`) with the same name overrides one of these. |
 | `prompts/` | `/implement`, `/scout-and-plan`, `/implement-and-review` workflow prompts for the subagent tool. |
 
@@ -15,8 +16,8 @@ A [pi](https://pi.dev) package with a model router and role-based subagents, sha
 
 | Tier | Model | Picked for |
 |---|---|---|
-| `standard` | `anthropic/claude-sonnet-5-5` | Ordinary features, fixes, reviews, docs, questions |
-| `complex` | `anthropic/claude-opus-5-5` | Subtle design, cross-cutting refactors, hard debugging. **Also the fallback.** |
+| `standard` | `pi-claude-cli/claude-sonnet-5-5` | Ordinary features, fixes, reviews, docs, questions |
+| `complex` | `pi-claude-cli/claude-opus-5-5` | Subtle design, cross-cutting refactors, hard debugging. **Also the fallback.** |
 | `deep` | `openai/gpt-6.1-sol` | Logic-heavy algorithms, backend internals, math |
 
 The router uses the fallback tier when the classifier is unreachable (with a one-time warning) or when the top answer's probability is below 0.5.
@@ -25,8 +26,8 @@ The router uses the fallback tier when the classifier is unreachable (with a one
 
 | Agent | Model | Role |
 |---|---|---|
-| `scout` | `anthropic/claude-haiku-4-5` | Fast read-only recon |
-| `planner` | `anthropic/claude-opus-5-5` | Implementation plans |
+| `scout` | `pi-claude-cli/claude-haiku-4-5` | Fast read-only recon |
+| `planner` | `pi-claude-cli/claude-opus-5-5` | Implementation plans |
 | `reviewer` | `openai/gpt-6-astra:high` | Code review by a different model family |
 | `worker` | `router/auto` | General work, with the model picked by classifying the task |
 
@@ -40,7 +41,7 @@ pi install ~/projects/pi-halfmoon-setup          # local checkout; edits apply o
 pi install git:github.com/halfmoon-mind/pi-halfmoon-setup
 ```
 
-Log in to both providers with `/login` (Anthropic and OpenAI). Then select `router/auto` with `/model`, or start pi with `pi --model router/auto`.
+Log in to Claude Code with `claude auth login` (Claude models) and to OpenAI with `/login`. Then select `router/auto` with `/model`, or start pi with `pi --model router/auto`.
 
 ## Classifier
 
@@ -66,5 +67,6 @@ node --test extensions/router.test.ts
 
 ## Notes
 
-- Using an Anthropic subscription in pi draws on the account's **extra usage**. Once extra usage runs out, requests fail with `You're out of extra usage` (HTTP 400).
+- Claude models use the `pi-claude-cli` provider, which runs the logged-in `claude` CLI (`claude -p`), so they draw on the subscription's usage limits. pi's built-in `anthropic` provider draws on the account's **extra usage** instead; once that runs out, requests fail with `You're out of extra usage` (HTTP 400).
+- `claude -p` loads your Claude Code setup (`~/.claude/CLAUDE.md`, hooks, plugins, MCP servers) on every request.
 - Settings that cannot live in a package stay in `~/.pi/agent/settings.json`: credentials, global UI settings, and keybinding overrides.

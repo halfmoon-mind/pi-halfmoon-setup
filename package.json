@@ -7,7 +7,7 @@
   "keywords": ["pi-package"],
   "license": "MIT",
   "pi": {
-    "extensions": ["./extensions/router.ts", "./extensions/subagent/index.ts"],
+    "extensions": ["./extensions/router.ts", "./extensions/subagent/index.ts", "./extensions/pi-claude-cli/index.ts"],
     "prompts": ["./prompts"]
   },
   "peerDependencies": {

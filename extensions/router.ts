@@ -17,9 +17,10 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
 
 // Tier -> physical model. Role split follows oh-my-openagent's agent-model-matching guide.
+// Claude goes through pi-claude-cli (the logged-in `claude` CLI) so it draws on subscription limits, not extra usage.
 const TIERS = {
-	standard: { provider: "anthropic", id: "claude-sonnet-5-5", criteria: "Ordinary features, fixes, reviews, docs, or questions" },
-	complex: { provider: "anthropic", id: "claude-opus-5-5", criteria: "Subtle design, cross-cutting refactors, or hard debugging" },
+	standard: { provider: "pi-claude-cli", id: "claude-sonnet-5-5", criteria: "Ordinary features, fixes, reviews, docs, or questions" },
+	complex: { provider: "pi-claude-cli", id: "claude-opus-5-5", criteria: "Subtle design, cross-cutting refactors, or hard debugging" },
 	deep: { provider: "openai", id: "gpt-6.1-sol", criteria: "Logic-heavy algorithms, backend internals, or math with a clear goal" },
 } as const;
 type Tier = keyof typeof TIERS;
