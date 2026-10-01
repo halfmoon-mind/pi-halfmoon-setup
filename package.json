@@ -10,7 +10,7 @@
     "test": "node --import ./extensions/test-hooks.ts --test --test-timeout=10000 'extensions/**/*.test.ts'"
   },
   "pi": {
-    "extensions": ["./extensions/router.ts", "./extensions/subagent/index.ts", "./extensions/pi-claude-cli/index.ts"],
+    "extensions": ["./extensions/router.ts", "./extensions/footer.ts", "./extensions/subagent/index.ts", "./extensions/pi-claude-cli/index.ts"],
     "prompts": ["./prompts"]
   },
   "peerDependencies": {

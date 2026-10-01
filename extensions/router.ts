@@ -53,6 +53,8 @@ const LAYA_START_TIMEOUT_MS = 30_000;
 
 interface RouterState {
 	tier: Tier;
+	// The classifier could not answer, so `tier` is FALLBACK_TIER by default rather than by choice.
+	unclassified?: true;
 }
 
 function firstUserText(messages: readonly Message[]): string {
@@ -156,10 +158,11 @@ export default function (pi: ExtensionAPI) {
 	let idleTimer: ReturnType<typeof setTimeout> | undefined;
 	let ui: ExtensionContext["ui"] | undefined;
 
+	// Only states that explain a session's tier are shown; a running or idle laya is the normal case.
 	async function updateStatus() {
-		let text = "laya idle";
+		let text: string | undefined;
 		if (layaOff()) text = "laya off";
-		else if (await healthy()) text = "laya on";
+		else if (await healthy()) text = undefined;
 		else if (child) text = "laya starting";
 		else if (cannotStart) text = "laya unavailable";
 		ui?.setStatus("laya", text);
@@ -302,8 +305,10 @@ export default function (pi: ExtensionAPI) {
 				if (!tier && ctx.hasUI && !cannotStart) {
 					ctx.ui.notify(`router/auto: classifier unavailable, using ${FALLBACK_TIER}`, "warning");
 				}
-				state = { tier: tier ?? FALLBACK_TIER };
+				state = tier ? { tier } : { tier: FALLBACK_TIER, unclassified: true };
 			}
+			// footer.ts shows this before the routed model.
+			if (ctx.hasUI) ctx.ui.setStatus("router", state.unclassified ? `${state.tier} (unclassified)` : state.tier);
 			const { provider, id } = TIERS[state.tier];
 			const model = resolveModel(ctx, provider, id);
 			if (!model) throw new Error(`router/auto: ${provider}/${id} is not in the model catalog`);

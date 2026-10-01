@@ -16,6 +16,7 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 	let route: any;
 	let classifyCalls = 0;
 	const notices: string[] = [];
+	const statuses: Record<string, string | undefined> = {};
 	const commands: Record<string, any> = {};
 	const handlers: Record<string, any> = {};
 	const pi: any = {
@@ -33,7 +34,12 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 	router(pi);
 	const ctx: any = {
 		hasUI: true,
-		ui: { notify: (msg: string) => notices.push(msg), setStatus() {} },
+		ui: {
+			notify: (msg: string) => notices.push(msg),
+			setStatus: (key: string, text?: string) => {
+				statuses[key] = text;
+			},
+		},
 		modelRegistry: {
 			findOfType: () => (answer === "missing" ? undefined : { id: "jev-latest" }),
 			classify: async () => {
@@ -57,6 +63,7 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 		sessionStart: () => handlers.session_start({}, ctx),
 		calls: () => classifyCalls,
 		notices,
+		statuses,
 	};
 }
 
@@ -70,6 +77,7 @@ test("classifies the first request, then stays on the stored tier without classi
 	assert.equal(next.model.id, "gpt-6.1-sol");
 	assert.equal(next.state, first.state);
 	assert.equal(s.calls(), 1);
+	assert.equal(s.statuses.router, "deep");
 });
 
 test("a near-tie routes to the fallback tier instead of the top choice", async () => {
@@ -81,6 +89,7 @@ test("a missing classifier falls back and tells the user", async () => {
 	const s = setup("missing");
 	assert.equal((await s.route()).model.id, "claude-opus-5-5");
 	assert.equal(s.notices.length, 1);
+	assert.equal(s.statuses.router, "complex (unclassified)");
 });
 
 test("a direct request stays on the session's model without classifying or warning", async () => {
@@ -126,7 +135,8 @@ test("/laya off routes to the newest Opus without classifying or warning; /laya 
 	const s = setup(choice("deep", 0.9));
 	await s.laya("off");
 	const routed = await s.route();
-	assert.deepEqual([routed.model.id, routed.state.tier], ["claude-opus-5-5", "complex"]);
+	assert.deepEqual([routed.model.id, routed.state.tier, routed.state.unclassified], ["claude-opus-5-5", "complex", undefined]);
+	assert.equal(s.statuses.router, "complex");
 	assert.equal(s.calls(), 0);
 	assert.deepEqual(s.notices, ["laya off: router/auto uses pi-claude-cli/claude-opus-5-5 without classifying"]);
 	await s.laya("on");
