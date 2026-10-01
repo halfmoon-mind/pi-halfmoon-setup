@@ -1,22 +1,39 @@
 // Run: node --test extensions/router.test.ts  (Node >= 22.18 strips the types)
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import router from "./router.ts";
 
-function setup(answer: unknown | "missing") {
+const CATALOG = ["claude-sonnet-5-5", "claude-opus-4-5-20251101", "claude-opus-5", "claude-opus-5-5"].map((id) => ({ provider: "pi-claude-cli", id }));
+
+function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<string, string> = {}) {
+	// A non-local laya URL keeps pi from starting laya-serve; the switch file goes to a fresh dir.
+	Object.assign(process.env, { LAYA_URL: "http://laya.test/v1", ...env });
+	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "router-test-"));
 	let route: any;
 	let classifyCalls = 0;
 	const notices: string[] = [];
+	const commands: Record<string, any> = {};
+	const handlers: Record<string, any> = {};
 	const pi: any = {
 		registerProvider() {},
 		registerVirtualModel(def: any) {
 			route = def.route;
 		},
+		registerCommand(name: string, def: any) {
+			commands[name] = def;
+		},
+		on(event: string, handler: any) {
+			handlers[event] = handler;
+		},
 	};
 	router(pi);
 	const ctx: any = {
 		hasUI: true,
-		ui: { notify: (msg: string) => notices.push(msg) },
+		ui: { notify: (msg: string) => notices.push(msg), setStatus() {} },
 		modelRegistry: {
 			findOfType: () => (answer === "missing" ? undefined : { id: "jev-latest" }),
 			classify: async () => {
@@ -24,6 +41,7 @@ function setup(answer: unknown | "missing") {
 				return { stopReason: "stop", answers: { tier: answer } };
 			},
 			find: (provider: string, id: string) => ({ provider, id }),
+			getAll: () => catalog,
 		},
 	};
 	const request = (state?: unknown, extra?: object) => ({
@@ -35,6 +53,8 @@ function setup(answer: unknown | "missing") {
 	});
 	return {
 		route: (state?: unknown, extra?: object) => route(request(state, extra), ctx),
+		laya: (args: string) => commands.laya.handler(args, ctx),
+		sessionStart: () => handlers.session_start({}, ctx),
 		calls: () => classifyCalls,
 		notices,
 	};
@@ -77,4 +97,65 @@ test("a classification cancelled by the user stores no tier", async () => {
 	const controller = new AbortController();
 	controller.abort();
 	await assert.rejects(s.route(undefined, { signal: controller.signal }));
+});
+
+test("the complex and standard tiers follow the newest Opus and Sonnet the provider lists", async () => {
+	const catalog = [
+		...CATALOG,
+		{ provider: "pi-claude-cli", id: "claude-opus-6" },
+		{ provider: "pi-claude-cli", id: "claude-sonnet-6" },
+		{ provider: "pi-claude-cli", id: "claude-opus-4-20250514" }, // a dated snapshot, not version 4.20250514
+		{ provider: "anthropic", id: "claude-opus-7" }, // another provider's catalog
+	];
+	const routed = await setup(choice("complex", 0.9), catalog).route();
+	assert.deepEqual([routed.model.provider, routed.model.id], ["pi-claude-cli", "claude-opus-6"]);
+	assert.equal((await setup(choice("standard", 0.9), catalog).route()).model.id, "claude-sonnet-6");
+});
+
+test("without laya-serve installed, router/auto still answers and explains the fix once", async () => {
+	// Port 9 on loopback refuses at once, so laya looks down and pi tries to start a missing binary.
+	// "missing": with laya down the classifier cannot answer, as in a real pi.
+	const s = setup("missing", CATALOG, { LAYA_URL: "http://127.0.0.1:9/v1", LAYA_SERVE_BIN: "/nonexistent/laya-serve" });
+	s.sessionStart();
+	for (let session = 0; session < 3; session++) assert.equal((await s.route()).model.id, "claude-opus-5-5");
+	assert.equal(s.notices.length, 1);
+	assert.match(s.notices[0], /pip install "laya\[serve\]".*LAYA_SERVE_BIN.*\/laya off/);
+});
+
+test("/laya off routes to the newest Opus without classifying or warning; /laya on classifies again", async () => {
+	const s = setup(choice("deep", 0.9));
+	await s.laya("off");
+	const routed = await s.route();
+	assert.deepEqual([routed.model.id, routed.state.tier], ["claude-opus-5-5", "complex"]);
+	assert.equal(s.calls(), 0);
+	assert.deepEqual(s.notices, ["laya off: router/auto uses pi-claude-cli/claude-opus-5-5 without classifying"]);
+	await s.laya("on");
+	assert.equal((await s.route()).model.id, "gpt-6.1-sol");
+	assert.equal(s.calls(), 1);
+});
+
+test("a process started with spawnWithLifeline does not outlive a SIGKILLed parent", async () => {
+	// Stand-in for pi: starts `sleep` the way pi starts laya-serve, prints its pid, then idles.
+	const routerUrl = JSON.stringify(new URL("./router.ts", import.meta.url).href);
+	const parent = spawn(
+		process.execPath,
+		["--input-type=module", "-e", `import { spawnWithLifeline } from ${routerUrl};
+			console.log(spawnWithLifeline("sleep", ["300"], process.env).pid); setInterval(() => {}, 1e6);`],
+		{ stdio: ["ignore", "pipe", "inherit"] },
+	);
+	const pid = Number(String(await new Promise((resolve) => parent.stdout.once("data", resolve))));
+	// kill(pid, 0) also succeeds on a zombie, so "not alive" means neither running nor a zombie.
+	const alive = () => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	assert.ok(alive());
+	parent.kill("SIGKILL");
+	const deadline = Date.now() + 5000;
+	while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(alive(), false);
 });

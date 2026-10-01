@@ -16,18 +16,18 @@ A [pi](https://pi.dev) package with a model router and role-based subagents, sha
 
 | Tier | Model | Picked for |
 |---|---|---|
-| `standard` | `pi-claude-cli/claude-sonnet-5-5` | Ordinary features, fixes, reviews, docs, questions |
-| `complex` | `pi-claude-cli/claude-opus-5-5` | Subtle design, cross-cutting refactors, hard debugging. **Also the fallback.** |
+| `standard` | `pi-claude-cli/claude-sonnet-*`: the newest Sonnet in pi's model catalog (now 5.5) | Ordinary features, fixes, reviews, docs, questions |
+| `complex` | `pi-claude-cli/claude-opus-*`: the newest Opus in pi's model catalog (now 5.5) | Subtle design, cross-cutting refactors, hard debugging. **Also the fallback.** |
 | `deep` | `openai/gpt-6.1-sol` | Logic-heavy algorithms, backend internals, math |
 
-The router uses the fallback tier when the classifier is unreachable (with a one-time warning) or when the top answer's probability is below 0.5.
+The router uses the fallback tier when the classifier is unreachable (with a one-time warning), when the top answer's probability is below 0.5, or, without a warning, while laya is switched off with `/laya off`.
 
 ### Agents
 
 | Agent | Model | Role |
 |---|---|---|
-| `scout` | `pi-claude-cli/claude-haiku-4-5` | Fast read-only recon |
-| `planner` | `pi-claude-cli/claude-opus-5-5` | Implementation plans |
+| `scout` | `pi-claude-cli/claude-haiku`: pi picks the newest Haiku for a partial name (now 4.5) | Fast read-only recon |
+| `planner` | `pi-claude-cli/claude-opus`: pi picks the newest Opus for a partial name (now 5.5) | Implementation plans |
 | `reviewer` | `openai/gpt-6-astra:high` | Code review by a different model family |
 | `worker` | `router/auto` | General work, with the model picked by classifying the task |
 
@@ -35,27 +35,52 @@ The tier and agent choices follow the role split in oh-my-openagent's [agent-mod
 
 ## Install
 
-```bash
-pi install ~/projects/pi-halfmoon-setup          # local checkout; edits apply on /reload
-# or, on another machine:
-pi install git:github.com/halfmoon-mind/pi-halfmoon-setup
-```
+1. Install the package.
 
-Log in to Claude Code with `claude auth login` (Claude models) and to OpenAI with `/login`. Then select `router/auto` with `/model`, or start pi with `pi --model router/auto`.
+   ```bash
+   pi install git:github.com/halfmoon-mind/pi-halfmoon-setup
+   # or a local checkout, where edits apply on /reload:
+   pi install ~/projects/pi-halfmoon-setup
+   ```
+
+2. Log in to the model providers.
+   - Claude: install [Claude Code](https://code.claude.com) and run `claude auth login`. The `pi-claude-cli` provider runs the `claude` CLI, so without it the `standard` and `complex` tiers and the `scout` and `planner` agents fail.
+   - OpenAI: run `/login` in pi and pick OpenAI.
+
+3. Install laya, the local classifier (optional, see [Without laya](#without-laya)). It needs Python 3.10 or later; the model download is a few MB.
+
+   ```bash
+   pip install "laya[serve]"
+   # If laya-serve is not on PATH, for example inside a venv, add this to ~/.zshrc:
+   export LAYA_SERVE_BIN=~/projects/laya/.venv/bin/laya-serve
+   ```
+
+4. Start pi with `pi --model router/auto`, or pick `router/auto` with `/model`. The footer shows `laya on` once the classifier is ready, and `/laya` shows its state.
+
+### Without laya
+
+The package works without laya; nothing fails to load. `router/auto` skips classification and uses the `complex` tier (the newest Opus), and the first `router/auto` session shows one warning that repeats the steps above. To choose:
+
+- Install laya later (step 3), then run `/laya on`, or restart pi after changing `LAYA_SERVE_BIN`.
+- Run `/laya off` to always use the newest Opus and hide the warning.
+- Classify with TypeSafe Jev instead, which needs no local server: `export PI_ROUTER_CLASSIFIER=jev TYPESAFE_API_KEY=...`.
 
 ## Classifier
 
 By default, the router classifies with a local [Laya](https://github.com/NandhaKishorM/laya) server. Laya speaks the same System One protocol as TypeSafe Jev, so the router reuses pi's built-in Jev client and points it at the local server.
 
-```bash
-# one-time: pip install "laya[serve]"
-LAYA_HOST=127.0.0.1 LAYA_MODELS=english laya-serve      # http://127.0.0.1:8000
-```
+pi starts and stops laya-serve itself when `LAYA_URL` is local (install it with [Install](#install) step 3):
+
+- A `router/auto` session starts laya ahead of its first message (cold start is about 5 to 10 s), and the footer shows `laya starting`, `laya on`, `laya idle`, `laya unavailable` (not installed), or `laya off`.
+- laya holds about 2.5 GB while running, so pi stops it after 5 minutes unused and starts it again when a new session needs it.
+- laya never outlives the pi that started it: closing pi or the terminal stops it, and a lifeline process stops it even if pi crashes or is killed.
+- `/laya` shows the state. `/laya off` stops laya and makes `router/auto` use the newest Opus without classifying; `/laya on` turns it back on. The switch is saved in `~/.pi/agent/laya.json` and applies to every pi.
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `PI_ROUTER_CLASSIFIER` | `laya` | `laya` for the local server, `jev` for TypeSafe Jev (needs `TYPESAFE_API_KEY`) |
-| `LAYA_URL` | `http://127.0.0.1:8000/v1` | laya-serve base URL |
+| `LAYA_URL` | `http://127.0.0.1:8000/v1` | laya-serve base URL. pi manages laya only when this is `127.0.0.1` or `localhost`. |
+| `LAYA_SERVE_BIN` | `laya-serve` | laya-serve executable that pi starts |
 
 The footer and `/session` show the classifier as `typesafe/jev-latest` in both modes.
 
