@@ -6,6 +6,9 @@
   "description": "Personal pi setup: classify-once model router and role-based subagents",
   "keywords": ["pi-package"],
   "license": "MIT",
+  "scripts": {
+    "test": "node --import ./extensions/test-hooks.ts --test --test-timeout=10000 'extensions/**/*.test.ts'"
+  },
   "pi": {
     "extensions": ["./extensions/router.ts", "./extensions/subagent/index.ts", "./extensions/pi-claude-cli/index.ts"],
     "prompts": ["./prompts"]
