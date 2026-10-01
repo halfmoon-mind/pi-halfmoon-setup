@@ -1,0 +1,20 @@
+{
+  "name": "pi-halfmoon-setup",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Personal pi setup: classify-once model router and role-based subagents",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions/router.ts", "./extensions/subagent/index.ts"],
+    "prompts": ["./prompts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}
