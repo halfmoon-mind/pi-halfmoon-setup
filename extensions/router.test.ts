@@ -15,6 +15,7 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "router-test-"));
 	let route: any;
 	let classifyCalls = 0;
+	let classifyingStatus: string | undefined;
 	const notices: string[] = [];
 	const statuses: Record<string, string | undefined> = {};
 	const commands: Record<string, any> = {};
@@ -44,6 +45,7 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 			findOfType: () => (answer === "missing" ? undefined : { id: "jev-latest" }),
 			classify: async () => {
 				classifyCalls++;
+				classifyingStatus = statuses.router;
 				return { stopReason: "stop", answers: { tier: answer, effort } };
 			},
 			find: (provider: string, id: string) => ({ provider, id }),
@@ -62,6 +64,7 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 		laya: (args: string) => commands.laya.handler(args, ctx),
 		sessionStart: () => handlers.session_start({}, ctx),
 		calls: () => classifyCalls,
+		classifyingStatus: () => classifyingStatus,
 		notices,
 		statuses,
 	};
@@ -77,7 +80,8 @@ test("classifies the first request, then stays on the stored tier without classi
 	assert.equal(next.model.id, "gpt-6.1-sol");
 	assert.equal(next.state, first.state);
 	assert.equal(s.calls(), 1);
-	assert.equal(s.statuses.router, "deep");
+	assert.equal(s.classifyingStatus(), "classifying…");
+	assert.equal(s.statuses.router, "deep 56%");
 });
 
 test("Laya's effort score sets the thinking level until the user picks another one", async () => {
@@ -98,13 +102,14 @@ test("Laya's effort score sets the thinking level until the user picks another o
 test("a near-tie routes to the fallback tier instead of the top choice", async () => {
 	const s = setup(choice("standard", 0.36));
 	assert.equal((await s.route()).model.id, "claude-opus-5-5");
+	assert.equal(s.statuses.router, "complex? 36%");
 });
 
 test("a missing classifier falls back and tells the user", async () => {
 	const s = setup("missing");
 	assert.equal((await s.route()).model.id, "claude-opus-5-5");
 	assert.equal(s.notices.length, 1);
-	assert.equal(s.statuses.router, "complex (unclassified)");
+	assert.equal(s.statuses.router, "complex?");
 });
 
 test("a direct request stays on the session's model without classifying or warning", async () => {
@@ -121,6 +126,7 @@ test("a classification cancelled by the user stores no tier", async () => {
 	const controller = new AbortController();
 	controller.abort();
 	await assert.rejects(s.route(undefined, { signal: controller.signal }));
+	assert.equal(s.statuses.router, undefined);
 });
 
 test("the complex and standard tiers follow the newest Opus and Sonnet the provider lists", async () => {

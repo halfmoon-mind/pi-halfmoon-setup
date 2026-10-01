@@ -66,6 +66,8 @@ interface RouterState {
 	tier: Tier;
 	// The classifier could not answer, so `tier` is FALLBACK_TIER by default rather than by choice.
 	unclassified?: true;
+	// Laya's probability for its top choice; below MIN_PROBABILITY, `tier` is FALLBACK_TIER instead.
+	probability?: number;
 	// Thinking level Laya chose, and the user's level at the time; picking another level in pi drops it.
 	effort?: ModelRouteRequest["thinkingLevel"];
 	userLevel?: ModelRouteRequest["thinkingLevel"];
@@ -102,13 +104,22 @@ async function classifyRequest(request: ModelRouteRequest<RouterState>, ctx: Ext
 		);
 		const answer = result.stopReason === "stop" ? result.answers.tier : undefined;
 		if (answer?.type !== "choice" || !(answer.choice in TIERS)) return undefined;
-		const tier = (answer.probabilities[answer.choice] ?? 0) >= MIN_PROBABILITY ? (answer.choice as Tier) : FALLBACK_TIER;
+		const probability = answer.probabilities[answer.choice] ?? 0;
+		const tier = probability >= MIN_PROBABILITY ? (answer.choice as Tier) : FALLBACK_TIER;
 		const score = result.answers.effort;
 		const effort = score?.type === "score" ? EFFORTS[Math.round(score.score)]?.level : undefined;
-		return effort ? { tier, effort, userLevel: request.thinkingLevel } : { tier };
+		return effort ? { tier, probability, effort, userLevel: request.thinkingLevel } : { tier, probability };
 	} catch {
 		return undefined;
 	}
+}
+
+// "deep 82%"; a `?` marks a tier taken by default, after a near-tie or without an answer.
+function tierLabel(state: RouterState): string {
+	if (state.unclassified) return `${state.tier}?`;
+	if (state.probability === undefined) return state.tier;
+	const mark = state.probability < MIN_PROBABILITY ? "?" : "";
+	return `${state.tier}${mark} ${Math.round(state.probability * 100)}%`;
 }
 
 // `<family>-*` resolves to the newest `<family>-<major>[-<minor>]` the provider lists, skipping dated
@@ -319,9 +330,13 @@ export default function (pi: ExtensionAPI) {
 				// Switched off with /laya off: no classification, and no warning since it is deliberate.
 				const off = layaOff();
 				if (managed && !off) await ensureLaya(request.signal);
+				if (!off && ctx.hasUI) ctx.ui.setStatus("router", "classifying…");
 				const classified = off ? { tier: FALLBACK_TIER } : await classifyRequest(request, ctx);
 				// Throwing ends this request without storing a tier, so a cancelled classification is retried next time.
-				request.signal?.throwIfAborted();
+				if (request.signal?.aborted) {
+					if (ctx.hasUI) ctx.ui.setStatus("router", undefined);
+					request.signal.throwIfAborted();
+				}
 				if (managed && !off) touchLaya();
 				// A missing laya-serve was already explained once; do not repeat it every session.
 				if (!classified && ctx.hasUI && !cannotStart) {
@@ -330,9 +345,9 @@ export default function (pi: ExtensionAPI) {
 				state = classified ?? { tier: FALLBACK_TIER, unclassified: true };
 			}
 			// The user picked another thinking level after Laya chose one; theirs wins for the rest of the session.
-			if (state.effort && request.thinkingLevel !== state.userLevel) state = { tier: state.tier };
+			if (state.effort && request.thinkingLevel !== state.userLevel) state = { tier: state.tier, probability: state.probability };
 			// footer.ts shows this before the routed model.
-			if (ctx.hasUI) ctx.ui.setStatus("router", state.unclassified ? `${state.tier} (unclassified)` : state.tier);
+			if (ctx.hasUI) ctx.ui.setStatus("router", tierLabel(state));
 			const { provider, id } = TIERS[state.tier];
 			const model = resolveModel(ctx, provider, id);
 			if (!model) throw new Error(`router/auto: ${provider}/${id} is not in the model catalog`);
