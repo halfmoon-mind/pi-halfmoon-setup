@@ -5,8 +5,9 @@
  * subprocess using stream-json NDJSON protocol.
  *
  * Vendored from pi-claude-cli 0.3.1 (MIT, see LICENSE; github.com/rchern/pi-claude-cli),
- * patched for pi 0.99's context shape, to drop the cross-spawn dependency, and to report
- * a CLI that exits with an error instead of ending the turn with an empty reply.
+ * patched for pi 0.99's context shape, to drop the cross-spawn dependency, to report
+ * a CLI that exits with an error instead of ending the turn with an empty reply, and to
+ * send pi's whole history on every call instead of resuming a CLI session that lost the tool calls.
  */
 
 import { getCurrentSystemPrompt, getModels } from "@mariozechner/pi-ai";

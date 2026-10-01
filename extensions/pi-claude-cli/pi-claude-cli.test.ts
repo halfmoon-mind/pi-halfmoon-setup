@@ -38,7 +38,7 @@ const event = (event: object) => ({ type: "stream_event", event, parent_tool_use
 const flag = (args: string[], name: string) => args[args.indexOf(name) + 1];
 const recorded = () => JSON.parse(readFileSync(record, "utf8"));
 
-test("pi 0.99's system message reaches claude as the system prompt, and the first turn starts pi's session", async () => {
+test("pi 0.99's system message reaches claude as the system prompt, and claude keeps no session of its own", async () => {
 	const lines = [
 		event({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
 		event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello" } }),
@@ -53,11 +53,44 @@ test("pi 0.99's system message reaches claude as the system prompt, and the firs
 	const reply = await run({ lines }, messages, { sessionId: "s1", reasoning: "high" });
 
 	const { args, sys, input } = recorded();
-	assert.deepEqual([flag(args, "--model"), flag(args, "--session-id"), flag(args, "--effort")], [opus.id, "s1", "max"]);
-	assert.ok(!args.includes("--resume"));
+	assert.deepEqual([flag(args, "--model"), flag(args, "--effort")], [opus.id, "max"]);
+	assert.ok(args.includes("--no-session-persistence") && !args.includes("--session-id") && !args.includes("--resume"));
 	assert.match(sys, /^You are pi\./);
 	assert.equal(input.message.content, "USER:\nhi");
 	assert.deepEqual([reply.stopReason, reply.content], ["stop", [{ type: "text", text: "Hello" }]]);
+});
+
+// The kill above stops claude before it saves its tool calls, so only pi's history has them.
+test("after tool calls, claude gets pi's whole history with the system prompt, including its own tool calls", async () => {
+	const lines = [event({ type: "message_stop" }), { type: "result", subtype: "success" }];
+	const messages = [
+		{ role: "system", content: "You are pi.", timestamp: 1 },
+		{ role: "user", content: "read /a.txt, then delegate", timestamp: 2 },
+		{ role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read", arguments: { path: "/a.txt" } }], timestamp: 3 },
+		{ role: "toolResult", toolCallId: "t1", toolName: "read", content: [{ type: "text", text: "A" }], timestamp: 4 },
+		{ role: "assistant", content: [{ type: "toolCall", id: "t2", name: "subagent", arguments: { task: "x" } }], timestamp: 5 },
+		{ role: "toolResult", toolCallId: "t2", toolName: "subagent", content: [{ type: "text", text: "done" }], timestamp: 6 },
+	];
+	await run({ lines }, messages, { sessionId: "s1" });
+
+	const { args, sys, input } = recorded();
+	assert.ok(!args.includes("--resume"));
+	assert.match(sys, /^You are pi\./);
+	assert.equal(
+		input.message.content,
+		[
+			"USER:",
+			"read /a.txt, then delegate",
+			"ASSISTANT:",
+			'Historical tool call (non-executable): Read args={"file_path":"/a.txt"}',
+			"TOOL RESULT (historical Read):",
+			"A",
+			"ASSISTANT:",
+			'[Used subagent tool with args: {"task":"x"}]',
+			"TOOL RESULT (subagent):",
+			"done",
+		].join("\n"),
+	);
 });
 
 test("a tool call pi can run reaches pi with pi's names, and claude is killed before it runs the tool itself", async () => {
