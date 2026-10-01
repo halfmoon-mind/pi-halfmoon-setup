@@ -33,3 +33,4 @@ Output format:
 Overall assessment in 2-3 sentences.
 
 Be specific with file paths and line numbers.
+Critical is only for what must not ship: a bug, a security hole, or broken behavior you can point to. Taste and alternative approaches go under Suggestions.
