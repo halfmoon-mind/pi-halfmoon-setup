@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" fill="none">
+  <title>pi-halfmoon-setup: model routing and agent workflows</title>
+  <desc>The first request is classified once into Sonnet, Opus, or GPT. The session keeps its selected tier. Workflow prompts connect scout, planner, worker, and reviewer agents.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1200" y2="720" gradientUnits="userSpaceOnUse"><stop stop-color="#10192D"/><stop offset="1" stop-color="#182B37"/></linearGradient>
+    <linearGradient id="moon" x2="1" y2="1"><stop stop-color="#A7F3D0"/><stop offset="1" stop-color="#60A5FA"/></linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="m1 1 8 4-8 4" stroke="#8EA4BC" stroke-width="1.5"/></marker>
+  </defs>
+  <rect width="1200" height="720" rx="24" fill="url(#bg)"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <path d="M104 44a38 38 0 1 0 0 76Z" fill="url(#moon)"/>
+    <text x="144" y="77" fill="#F1F5F9" font-size="34" font-weight="700">pi-halfmoon-setup</text>
+    <text x="144" y="109" fill="#A8BBD0" font-size="18">Classify once. Keep the session steady. Delegate by role.</text>
+    <text x="48" y="165" fill="#87DCC1" font-size="13" font-weight="700" letter-spacing="2">01 / SESSION ROUTING</text>
+    <g stroke="#8EA4BC" stroke-width="2" marker-end="url(#arrow)">
+      <path d="M266 293H325"/><path d="M562 293H615V224H664"/><path d="M615 293H664"/><path d="M615 293V362H664"/>
+    </g>
+    <rect x="48" y="251" width="218" height="84" rx="14" fill="#20334B" stroke="#3A516C"/>
+    <text x="72" y="286" fill="#F1F5F9" font-size="21" font-weight="700">First request</text>
+    <text x="72" y="313" fill="#A8BBD0" font-size="16">router/auto</text>
+    <rect x="326" y="240" width="236" height="106" rx="14" fill="#203C42" stroke="#65CDB0"/>
+    <text x="350" y="277" fill="#C0F7E6" font-size="21" font-weight="700">Classify once</text>
+    <text x="350" y="305" fill="#B1CFCB" font-size="16">Laya / TypeSafe Jev</text>
+    <text x="350" y="328" fill="#B1CFCB" font-size="14">Fallback → Opus</text>
+    <rect x="666" y="197" width="486" height="54" rx="12" fill="#20334B" stroke="#3A516C"/>
+    <rect x="666" y="266" width="486" height="54" rx="12" fill="#20334B" stroke="#3A516C"/>
+    <rect x="666" y="335" width="486" height="54" rx="12" fill="#20334B" stroke="#3A516C"/>
+    <g fill="#F1F5F9" font-size="18" font-weight="700"><text x="690" y="231">standard</text><text x="690" y="300">complex</text><text x="690" y="369">deep</text></g>
+    <g fill="#A8BBD0" font-size="18"><text x="828" y="231">Claude Sonnet</text><text x="828" y="300">Claude Opus · fallback</text><text x="828" y="369">GPT-6.1-sol</text></g>
+    <text x="48" y="424" fill="#A8BBD0" font-size="16">The chosen tier stays with the session, avoiding cache disruption from rerouting.</text>
+    <path d="M48 454H1152" stroke="#34485E"/>
+    <text x="48" y="490" fill="#87DCC1" font-size="13" font-weight="700" letter-spacing="2">02 / ROLE-BASED WORKFLOWS</text>
+    <g stroke="#8EA4BC" stroke-width="2" marker-end="url(#arrow)"><path d="M294 565H333"/><path d="M580 565H619"/><path d="M866 565H905"/></g>
+    <g fill="#20334B" stroke="#3A516C"><rect x="48" y="520" width="246" height="92" rx="14"/><rect x="334" y="520" width="246" height="92" rx="14"/><rect x="620" y="520" width="246" height="92" rx="14"/><rect x="906" y="520" width="246" height="92" rx="14"/></g>
+    <g fill="#F1F5F9" font-size="22" font-weight="700"><text x="72" y="557">scout</text><text x="358" y="557">planner</text><text x="644" y="557">worker</text><text x="930" y="557">reviewer</text></g>
+    <g fill="#A8BBD0" font-size="16"><text x="72" y="585">Explore · Haiku</text><text x="358" y="585">Plan · Opus</text><text x="644" y="585">Implement · router/auto</text><text x="930" y="585">Review · GPT-6-astra</text></g>
+    <text x="48" y="651" fill="#A8BBD0" font-size="16">/implement: scout → planner → worker</text>
+    <text x="48" y="678" fill="#A8BBD0" font-size="16">/implement-and-review: worker → reviewer → worker</text>
+  </g>
+</svg>
