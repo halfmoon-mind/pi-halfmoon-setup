@@ -187,6 +187,7 @@ export function streamViaCli(
 
       // Track tool_use blocks for break-early decision at message_stop
       let sawBuiltInOrCustomTool = false;
+      let sawResult = false;
       // Guard against buffered readline lines firing after rl.close()
       let broken = false;
 
@@ -205,6 +206,7 @@ export function streamViaCli(
       });
 
       // Handle subprocess close -- surface crashes with stderr and exit code
+      const closed = new Promise((resolve) => proc!.once("close", resolve));
       proc.on("close", (code: number | null, _signal: string | null) => {
         clearTimeout(inactivityTimer);
         if (broken) return; // Break-early kill, expected
@@ -271,6 +273,7 @@ export function streamViaCli(
         } else if (msg.type === "control_request") {
           handleControlRequest(msg, proc!.stdin!);
         } else if (msg.type === "result") {
+          sawResult = true;
           if (msg.subtype === "error") {
             endStreamWithError(msg.error ?? "Unknown error from Claude CLI");
           }
@@ -285,6 +288,10 @@ export function streamViaCli(
       await new Promise<void>((resolve) => {
         rl.on("close", resolve);
       });
+
+      // Without a result, stdout closed because the CLI exited. stdout closes before the
+      // close handler sees the exit code, so wait for it to report a crash first.
+      if (!sawResult && !broken) await closed;
 
       // Push done event after readline closes (async). Pushing synchronously
       // inside handleMessageStop prevents pi from executing tools.

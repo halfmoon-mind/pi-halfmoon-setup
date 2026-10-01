@@ -92,8 +92,7 @@ test("a tool call pi can run reaches pi with pi's names, and claude is killed be
 	assert.equal(alive(), false);
 });
 
-const crashBug = "provider.ts pushes an empty done when stdout closes, before the close handler sees the exit code";
-test("a claude crash ends the turn with claude's stderr", { todo: crashBug }, async () => {
+test("a claude crash ends the turn with claude's stderr", async () => {
 	const reply = await run({ stderr: "Not logged in", exit: 1 }, [{ role: "user", content: "hi", timestamp: 1 }]);
 	assert.deepEqual(reply.content, [{ type: "text", text: "Error: Claude CLI exited with code 1: Not logged in" }]);
 });
