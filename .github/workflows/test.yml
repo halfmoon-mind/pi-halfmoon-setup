@@ -1,0 +1,25 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, so a new pi release that breaks this package shows up without a push.
+  schedule:
+    - cron: "0 0 * * 1"
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      # The tests load pi from its managed-install layout (see extensions/test-hooks.ts), so put the newest pi there.
+      - name: Install pi
+        run: |
+          version=$(npm view @earendil-works/pi-coding-agent version)
+          npm install --prefix ~/.pi/agent/install/releases/$version @earendil-works/pi-coding-agent@$version
+          echo $version > ~/.pi/agent/install/current-version
+      - run: npm test
