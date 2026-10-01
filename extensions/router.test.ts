@@ -9,7 +9,7 @@ import router from "./router.ts";
 
 const CATALOG = ["claude-sonnet-5-5", "claude-opus-4-5-20251101", "claude-opus-5", "claude-opus-5-5"].map((id) => ({ provider: "pi-claude-cli", id }));
 
-function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<string, string> = {}) {
+function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<string, string> = {}, effort?: unknown) {
 	// A non-local laya URL keeps pi from starting laya-serve; the switch file goes to a fresh dir.
 	Object.assign(process.env, { LAYA_URL: "http://laya.test/v1", ...env });
 	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "router-test-"));
@@ -44,7 +44,7 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 			findOfType: () => (answer === "missing" ? undefined : { id: "jev-latest" }),
 			classify: async () => {
 				classifyCalls++;
-				return { stopReason: "stop", answers: { tier: answer } };
+				return { stopReason: "stop", answers: { tier: answer, effort } };
 			},
 			find: (provider: string, id: string) => ({ provider, id }),
 			getAll: () => catalog,
@@ -78,6 +78,21 @@ test("classifies the first request, then stays on the stored tier without classi
 	assert.equal(next.state, first.state);
 	assert.equal(s.calls(), 1);
 	assert.equal(s.statuses.router, "deep");
+});
+
+test("Laya's effort score sets the thinking level until the user picks another one", async () => {
+	const score = (score: number) => ({ type: "score", score, confidence: 0.25 });
+	assert.equal((await setup(choice("deep", 0.9), CATALOG, {}, score(0.18)).route()).thinkingLevel, "low");
+	const s = setup(choice("deep", 0.9), CATALOG, {}, score(2.34));
+	const first = await s.route();
+	assert.equal(first.thinkingLevel, "high");
+	assert.equal((await s.route(first.state)).thinkingLevel, "high");
+	const picked = await s.route(first.state, { thinkingLevel: "low" });
+	assert.equal(picked.thinkingLevel, "low");
+	// Going back to the level the session started with keeps the user's choice, not Laya's.
+	assert.equal((await s.route(picked.state, { thinkingLevel: "medium" })).thinkingLevel, "medium");
+	// No effort answer: the user's level stands.
+	assert.equal((await setup(choice("deep", 0.9)).route()).thinkingLevel, "medium");
 });
 
 test("a near-tie routes to the fallback tier instead of the top choice", async () => {

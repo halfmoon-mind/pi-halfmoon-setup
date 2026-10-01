@@ -1,6 +1,7 @@
 /**
  * router/auto - a virtual model that classifies the first user message once, then stays on the
  * chosen model for the rest of the session so the prompt cache is never invalidated by routing.
+ * The same classification sets the thinking level, until the user picks another one in pi.
  *
  * Classifier backend (swap with one env var, no code change):
  *   PI_ROUTER_CLASSIFIER=laya (default)  local laya-serve, which speaks Jev's System One protocol
@@ -39,6 +40,16 @@ const TIERS = {
 type Tier = keyof typeof TIERS;
 const FALLBACK_TIER: Tier = "complex";
 
+// Laya scores the opening request 0-3 against these levels; the rounded score picks the thinking level.
+// ponytail: plain rounding keeps xhigh rare (needs >= 2.5) and still rates short how-to questions high
+// (seen: 1.6); add a confidence cutoff if that wastes tokens.
+const EFFORTS = [
+	{ level: "low", criteria: "Trivial: a typo, a rename, a one-line change, or explaining a command or concept" },
+	{ level: "medium", criteria: "Routine: an ordinary feature, fix, test, or review with a clear path" },
+	{ level: "high", criteria: "Hard: careful reasoning across several steps, files, or design tradeoffs" },
+	{ level: "xhigh", criteria: "Very hard: subtle concurrency or correctness bugs, novel algorithms, or high-stakes design" },
+] as const;
+
 // Laya's per-request state limit is 50k chars; the opening request is what decides the tier.
 const MAX_PROMPT_CHARS = 16_000;
 // ponytail: fixed threshold; below it the answer is a near-tie (seen: 0.363 vs 0.359), so take
@@ -55,6 +66,9 @@ interface RouterState {
 	tier: Tier;
 	// The classifier could not answer, so `tier` is FALLBACK_TIER by default rather than by choice.
 	unclassified?: true;
+	// Thinking level Laya chose, and the user's level at the time; picking another level in pi drops it.
+	effort?: ModelRouteRequest["thinkingLevel"];
+	userLevel?: ModelRouteRequest["thinkingLevel"];
 }
 
 function firstUserText(messages: readonly Message[]): string {
@@ -63,7 +77,7 @@ function firstUserText(messages: readonly Message[]): string {
 	return content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
 }
 
-async function classifyTier(request: ModelRouteRequest<RouterState>, ctx: ExtensionContext): Promise<Tier | undefined> {
+async function classifyRequest(request: ModelRouteRequest<RouterState>, ctx: ExtensionContext): Promise<RouterState | undefined> {
 	const classifier = ctx.modelRegistry.findOfType("classifier", "typesafe", "jev-latest");
 	if (!classifier) return undefined;
 	try {
@@ -77,13 +91,21 @@ async function classifyTier(request: ModelRouteRequest<RouterState>, ctx: Extens
 						instructions: "Which kind of software engineering work does `prompt` request?",
 						criteria: Object.fromEntries(Object.entries(TIERS).map(([tier, t]) => [tier, t.criteria])),
 					},
+					effort: {
+						type: "score",
+						instructions: "How much reasoning does the software engineering request in `prompt` need?",
+						criteria: EFFORTS.map((e) => e.criteria),
+					},
 				},
 			},
 			{ signal: request.signal },
 		);
 		const answer = result.stopReason === "stop" ? result.answers.tier : undefined;
 		if (answer?.type !== "choice" || !(answer.choice in TIERS)) return undefined;
-		return (answer.probabilities[answer.choice] ?? 0) >= MIN_PROBABILITY ? (answer.choice as Tier) : FALLBACK_TIER;
+		const tier = (answer.probabilities[answer.choice] ?? 0) >= MIN_PROBABILITY ? (answer.choice as Tier) : FALLBACK_TIER;
+		const score = result.answers.effort;
+		const effort = score?.type === "score" ? EFFORTS[Math.round(score.score)]?.level : undefined;
+		return effort ? { tier, effort, userLevel: request.thinkingLevel } : { tier };
 	} catch {
 		return undefined;
 	}
@@ -297,23 +319,26 @@ export default function (pi: ExtensionAPI) {
 				// Switched off with /laya off: no classification, and no warning since it is deliberate.
 				const off = layaOff();
 				if (managed && !off) await ensureLaya(request.signal);
-				const tier = off ? FALLBACK_TIER : await classifyTier(request, ctx);
+				const classified = off ? { tier: FALLBACK_TIER } : await classifyRequest(request, ctx);
 				// Throwing ends this request without storing a tier, so a cancelled classification is retried next time.
 				request.signal?.throwIfAborted();
 				if (managed && !off) touchLaya();
 				// A missing laya-serve was already explained once; do not repeat it every session.
-				if (!tier && ctx.hasUI && !cannotStart) {
+				if (!classified && ctx.hasUI && !cannotStart) {
 					ctx.ui.notify(`router/auto: classifier unavailable, using ${FALLBACK_TIER}`, "warning");
 				}
-				state = tier ? { tier } : { tier: FALLBACK_TIER, unclassified: true };
+				state = classified ?? { tier: FALLBACK_TIER, unclassified: true };
 			}
+			// The user picked another thinking level after Laya chose one; theirs wins for the rest of the session.
+			if (state.effort && request.thinkingLevel !== state.userLevel) state = { tier: state.tier };
 			// footer.ts shows this before the routed model.
 			if (ctx.hasUI) ctx.ui.setStatus("router", state.unclassified ? `${state.tier} (unclassified)` : state.tier);
 			const { provider, id } = TIERS[state.tier];
 			const model = resolveModel(ctx, provider, id);
 			if (!model) throw new Error(`router/auto: ${provider}/${id} is not in the model catalog`);
-			// Returning the same state object keeps it; a new object is stored once, on the first request.
-			return { model, thinkingLevel: request.thinkingLevel, state };
+			// Returning the same state object keeps it; a new object is stored on the first request and
+			// when the user overrides Laya's thinking level.
+			return { model, thinkingLevel: state.effort ?? request.thinkingLevel, state };
 		},
 	});
 }

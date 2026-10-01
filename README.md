@@ -98,6 +98,8 @@ A Claude `-*` setting picks the newest numbered version of that family in the re
 
 The classifier reads up to 16,000 characters of the first user message. When the chosen answer's probability is below `0.5` or the classifier is unreachable, the router uses `complex`. It also uses that tier while Laya is switched off with `/laya off`. This is a **fallback for failed classification**; it does not switch to another provider when the chosen model fails to authenticate or respond.
 
+The same classification also scores how hard the request is, and the session runs at `low`, `medium`, `high`, or `xhigh` thinking to match. If you pick a thinking level yourself in pi, yours is used for the rest of the session. When the classifier cannot answer, or Laya is off, your level is used from the start.
+
 ### Agents
 
 | Agent | Model setting | Role |
