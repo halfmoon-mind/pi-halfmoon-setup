@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
-import extension from "./index.ts";
+import extension, { formatRateLimits } from "./index.ts";
 
 // A stand-in `claude` on PATH that records how it was called and what reached it. $FAKE_CLAUDE lists its
 // steps: read the next stdin message, call a tool through the MCP server like the CLI does, write stream-json
@@ -50,7 +50,13 @@ process.env.PATH = dir + delimiter + process.env.PATH;
 
 let provider: any;
 const tools = [{ name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } } } }];
-extension({ on() {}, getAllTools: () => tools, registerProvider: (_id: string, def: any) => (provider = def) } as any);
+const handlers: Record<string, any> = {};
+extension({
+	on: (name: string, handler: any) => (handlers[name] = handler),
+	getAllTools: () => tools,
+	setActiveTools() {},
+	registerProvider: (_id: string, def: any) => (provider = def),
+} as any);
 const opus = { ...provider.models.find((m: any) => m.id.includes("opus")), provider: "pi-claude-cli", api: "pi-claude-cli" };
 
 function run(fake: object, messages: object[], options: object = {}) {
@@ -179,4 +185,20 @@ test("an error claude reports mid-reply, or an exit without a result, still show
 
 	const exited = await run({ lines: [thinking] }, hi);
 	assert.deepEqual(exited.content.at(-1), { type: "text", text: "Error: Claude CLI exited before it finished the reply" });
+});
+
+test("the subscription usage claude reports goes to the footer, with the reset time once a window is nearly used", async () => {
+	const statuses: Record<string, string> = {};
+	await handlers.session_start({}, { hasUI: true, ui: { setStatus: (key: string, text: string) => (statuses[key] = text), theme: { fg: (_color: string, text: string) => `<${text}>` } } });
+	const limits = (fiveHour: number, sevenDay: number) => ({
+		type: "rate_limit_event",
+		rate_limit_info: {
+			status: "allowed",
+			unifiedWindows: { five_hour: { utilization: fiveHour, resetsAt: 1790854800 }, seven_day: { utilization: sevenDay, resetsAt: 1790978400 } },
+		},
+	});
+	const lines = [event({ type: "message_stop" }), limits(0.03, 0.64), { type: "result", subtype: "success" }];
+	await run({ lines }, [{ role: "user", content: "hi", timestamp: 1 }]);
+	assert.equal(statuses.claude, "claude 5h 3% · 7d 64%");
+	assert.match(formatRateLimits(limits(0.85, 0.64).rate_limit_info)!, /^<claude 5h 85% ↻\d\d:\d\d · 7d 64%>$/);
 });

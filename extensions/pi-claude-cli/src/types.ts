@@ -23,6 +23,20 @@ export interface ClaudeSystemMessage {
   tools?: unknown[];
 }
 
+// The subscription's usage, sent with each reply
+export interface ClaudeRateLimitEvent {
+  type: "rate_limit_event";
+  rate_limit_info: {
+    status: string; // "allowed", ...
+    unifiedWindows?: Record<string, ClaudeRateLimitWindow>; // "five_hour", "seven_day"
+  };
+}
+
+export interface ClaudeRateLimitWindow {
+  utilization: number; // 0-1
+  resetsAt: number; // unix seconds
+}
+
 export interface ClaudeControlRequest {
   type: "control_request";
   request_id: string;
@@ -37,6 +51,7 @@ export type NdjsonMessage =
   | ClaudeStreamEventMessage
   | ClaudeResultMessage
   | ClaudeSystemMessage
+  | ClaudeRateLimitEvent
   | ClaudeControlRequest;
 
 // Claude API event types (inside stream_event wrapper)

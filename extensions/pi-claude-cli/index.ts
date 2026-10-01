@@ -12,7 +12,7 @@
  */
 
 import { getCurrentSystemPrompt, getModels } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { streamViaCli } from "./src/provider.js";
 import {
   validateCliPresence,
@@ -20,11 +20,31 @@ import {
   killAllProcesses,
 } from "./src/process-manager.js";
 import { getToolDefs, writeMcpConfig } from "./src/mcp-config.js";
+import type { ClaudeRateLimitEvent } from "./src/types.js";
+import { formatLimits } from "../footer.js";
 
 // Kill all active Claude subprocesses on process exit to prevent orphans
 process.on("exit", killAllProcesses);
 
 const PROVIDER_ID = "pi-claude-cli";
+
+let ui: ExtensionContext["ui"] | undefined;
+
+/** The footer status for the subscription's usage: "claude 5h 3% · 7d 64%". */
+export function formatRateLimits(
+  info: ClaudeRateLimitEvent["rate_limit_info"],
+): string | undefined {
+  const windows = info.unifiedWindows ?? {};
+  const labels = [["five_hour", "5h"], ["seven_day", "7d"]];
+  return formatLimits(
+    "claude",
+    labels.flatMap(([key, label]) => {
+      const w = windows[key];
+      return w ? [{ label, used: w.utilization, resetsAt: w.resetsAt }] : [];
+    }),
+    ui?.theme,
+  );
+}
 
 let mcpConfigPath: string | undefined;
 let mcpConfigResolved = false;
@@ -89,7 +109,8 @@ export default function (pi: ExtensionAPI) {
 
     // Ensure all registered tools are active so pi can execute them.
     // Some tools (find, grep, ls) are registered but not activated by default.
-    pi.on("session_start", async () => {
+    pi.on("session_start", async (_event, ctx) => {
+      ui = ctx.hasUI ? ctx.ui : undefined;
       const allTools = pi.getAllTools();
       if (Array.isArray(allTools)) {
         pi.setActiveTools(allTools.map((t: any) => t.name));
@@ -111,6 +132,7 @@ export default function (pi: ExtensionAPI) {
         return streamViaCli(model, legacy, {
           ...options,
           mcpConfigPath: configPath,
+          onRateLimit: (info) => ui?.setStatus("claude", formatRateLimits(info)),
         });
       },
     });

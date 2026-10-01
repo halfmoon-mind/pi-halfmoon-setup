@@ -42,15 +42,17 @@ import { handleControlRequest } from "./control-handler.js";
 import { mapThinkingEffort } from "./thinking-config.js";
 import { isPiKnownClaudeTool } from "./tool-mapping.js";
 import { deliverToolResult } from "./mcp-config.js";
-import type { NdjsonMessage } from "./types";
+import type { ClaudeRateLimitEvent, NdjsonMessage } from "./types";
 
 /** Inactivity timeout: kill subprocess if no stdout for 180 seconds (3 minutes) while it replies. */
 const INACTIVITY_TIMEOUT_MS = 180_000;
 
-/** Extended stream options: pi's SimpleStreamOptions plus optional cwd and mcpConfigPath */
+/** Extended stream options: pi's SimpleStreamOptions plus optional cwd, mcpConfigPath, and onRateLimit */
 type StreamViaCLiOptions = SimpleStreamOptions & {
   cwd?: string;
   mcpConfigPath?: string;
+  /** Receives the subscription's usage the CLI reports with each reply. */
+  onRateLimit?: (info: ClaudeRateLimitEvent["rate_limit_info"]) => void;
 };
 
 /** The CLI process that holds the conversation between pi's calls. */
@@ -199,6 +201,8 @@ function startSession(
     if (!msg) return;
     // The CLI asks before each tool call, also after pi's turn ended at that call.
     if (msg.type === "control_request") handleControlRequest(msg, proc.stdin!);
+    // It can come after pi's turn ended at a tool call, so it does not go through the turn.
+    else if (msg.type === "rate_limit_event") options?.onRateLimit?.(msg.rate_limit_info);
     else s.turn?.(msg);
   });
 
