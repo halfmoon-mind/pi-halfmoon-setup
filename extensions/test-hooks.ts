@@ -8,7 +8,9 @@ import { pathToFileURL } from "node:url";
 
 // ponytail: only pi's managed install (~/.pi/agent/install); point this elsewhere if pi is installed another way.
 const install = `${homedir()}/.pi/agent/install`;
-const piRoot = pathToFileURL(`${install}/releases/${readFileSync(`${install}/current-version`, "utf8").trim()}/package.json`).href;
+const release = `${install}/releases/${readFileSync(`${install}/current-version`, "utf8").trim()}`;
+// Resolve from pi-coding-agent itself, as pi does: its dependencies may be hoisted or nested under it.
+const piRoot = pathToFileURL(`${release}/node_modules/@earendil-works/pi-coding-agent/package.json`).href;
 
 registerHooks({
 	resolve(specifier, context, next) {
