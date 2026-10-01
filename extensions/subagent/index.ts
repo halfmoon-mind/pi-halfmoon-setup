@@ -179,11 +179,11 @@ function getFinalOutput(messages: Message[]): string {
 	return "";
 }
 
-function isFailedResult(result: SingleResult): boolean {
+export function isFailedResult(result: SingleResult): boolean {
 	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 }
 
-function getResultOutput(result: SingleResult): string {
+export function getResultOutput(result: SingleResult): string {
 	if (isFailedResult(result)) {
 		return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
 	}
@@ -269,7 +269,7 @@ interface DispatchDefaults {
 	thinkingLevel?: ThinkingLevel;
 }
 
-async function runSingleAgent(
+export async function runSingleAgent(
 	defaultCwd: string,
 	dispatchDefaults: DispatchDefaults,
 	agents: AgentConfig[],
