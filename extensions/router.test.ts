@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import router from "./router.ts";
 
-const CATALOG = ["claude-sonnet-5-5", "claude-opus-4-5-20251101", "claude-opus-5", "claude-opus-5-5"].map((id) => ({ provider: "pi-claude-cli", id }));
+const CATALOG = ["claude-sonnet-5-5", "claude-opus-4-5-20251101", "claude-opus-5", "claude-opus-5-5", "claude-fable-5-1"].map((id) => ({ provider: "pi-claude-cli", id }));
 
 function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<string, string> = {}, effort?: unknown) {
 	// A non-local laya URL keeps pi from starting laya-serve; the switch file goes to a fresh dir.
@@ -75,9 +75,9 @@ const choice = (choice: string, p: number) => ({ type: "choice", choice, probabi
 test("classifies the first request, then stays on the stored tier without classifying again", async () => {
 	const s = setup(choice("deep", 0.56));
 	const first = await s.route();
-	assert.deepEqual([first.model.provider, first.model.id, first.state.tier], ["openai", "gpt-6.1-sol", "deep"]);
+	assert.deepEqual([first.model.provider, first.model.id, first.state.tier], ["pi-claude-cli", "claude-opus-5-5", "deep"]);
 	const next = await s.route(first.state);
-	assert.equal(next.model.id, "gpt-6.1-sol");
+	assert.equal(next.model.id, "claude-opus-5-5");
 	assert.equal(next.state, first.state);
 	assert.equal(s.calls(), 1);
 	assert.equal(s.classifyingStatus(), "classifying…");
@@ -87,7 +87,7 @@ test("classifies the first request, then stays on the stored tier without classi
 test("Laya's effort score sets the thinking level until the user picks another one", async () => {
 	const score = (score: number) => ({ type: "score", score, confidence: 0.25 });
 	assert.equal((await setup(choice("deep", 0.9), CATALOG, {}, score(0.18)).route()).thinkingLevel, "low");
-	const s = setup(choice("deep", 0.9), CATALOG, {}, score(2.34));
+	const s = setup(choice("deep", 0.9), CATALOG, {}, score(1.9));
 	const first = await s.route();
 	assert.equal(first.thinkingLevel, "high");
 	assert.equal((await s.route(first.state)).thinkingLevel, "high");
@@ -97,6 +97,19 @@ test("Laya's effort score sets the thinking level until the user picks another o
 	assert.equal((await s.route(picked.state, { thinkingLevel: "medium" })).thinkingLevel, "medium");
 	// No effort answer: the user's level stands.
 	assert.equal((await setup(choice("deep", 0.9)).route()).thinkingLevel, "medium");
+});
+
+test("only work rated xhigh leaves Opus or Sonnet: design climbs to Fable, logic to GPT-6 Astra, for the whole session", async () => {
+	const score = (score: number) => ({ type: "score", score, confidence: 0.25 });
+	const route = (tier: string, effort: number) => setup(choice(tier, 0.9), CATALOG, {}, score(effort)).route();
+	const s = setup(choice("deep", 0.9), CATALOG, {}, score(2.2));
+	const first = await s.route();
+	assert.deepEqual([first.model.id, first.thinkingLevel, s.statuses.router], ["gpt-6-astra", "xhigh", "deep-high 90%"]);
+	// The user's own thinking level keeps the escalated model.
+	assert.equal((await s.route(first.state, { thinkingLevel: "low" })).model.id, "gpt-6-astra");
+	assert.equal((await route("complex", 2.2)).model.id, "claude-fable-5-1");
+	assert.equal((await route("deep", 2.1)).model.id, "claude-opus-5-5");
+	assert.equal((await route("standard", 2.2)).model.id, "claude-sonnet-5-5");
 });
 
 test("a near-tie routes to the fallback tier instead of the top choice", async () => {
@@ -153,7 +166,7 @@ test("without laya-serve installed, router/auto still answers and explains the f
 });
 
 test("/laya off routes to the newest Opus without classifying or warning; /laya on classifies again", async () => {
-	const s = setup(choice("deep", 0.9));
+	const s = setup(choice("standard", 0.9));
 	await s.laya("off");
 	const routed = await s.route();
 	assert.deepEqual([routed.model.id, routed.state.tier, routed.state.unclassified], ["claude-opus-5-5", "complex", undefined]);
@@ -161,7 +174,7 @@ test("/laya off routes to the newest Opus without classifying or warning; /laya 
 	assert.equal(s.calls(), 0);
 	assert.deepEqual(s.notices, ["laya off: router/auto uses pi-claude-cli/claude-opus-5-5 without classifying"]);
 	await s.laya("on");
-	assert.equal((await s.route()).model.id, "gpt-6.1-sol");
+	assert.equal((await s.route()).model.id, "claude-sonnet-5-5");
 	assert.equal(s.calls(), 1);
 });
 

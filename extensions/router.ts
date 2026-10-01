@@ -29,25 +29,34 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
 
-// Tier -> physical model. Role split follows oh-my-openagent's agent-model-matching guide.
+// Tier -> physical model, on oh-my-openagent's ladder: Opus is the default, and only work Laya rates xhigh
+// climbs to a flagship, Fable for design (omo's Daily Heavy lane) and GPT-6 Astra for logic (its deep-high
+// lane). GPT-6.1 Sol, omo's default deep model, is left out until it earns trust here.
 // Claude goes through pi-claude-cli (the logged-in `claude` CLI) so it draws on subscription limits, not extra usage.
 // An id ending in `-*` means the newest version of that family the provider lists (see resolveModel).
+// ponytail: an escalated session stays on Fable for good; point complex-high at Opus if Fable's allowance runs short.
 const TIERS = {
 	standard: { provider: "pi-claude-cli", id: "claude-sonnet-*", criteria: "Ordinary features, fixes, reviews, docs, or questions" },
-	complex: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Subtle design, cross-cutting refactors, or hard debugging" },
-	deep: { provider: "openai", id: "gpt-6.1-sol", criteria: "Logic-heavy algorithms, backend internals, or math with a clear goal" },
+	complex: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Subtle design, cross-cutting refactors, or hard debugging", xhigh: "complex-high" },
+	deep: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Logic-heavy algorithms, backend internals, or math with a clear goal", xhigh: "deep-high" },
+	// Not offered to Laya: reached only through a tier's `xhigh`.
+	"complex-high": { provider: "pi-claude-cli", id: "claude-fable-*" },
+	"deep-high": { provider: "openai", id: "gpt-6-astra" },
 } as const;
 type Tier = keyof typeof TIERS;
 const FALLBACK_TIER: Tier = "complex";
 
-// Laya scores the opening request 0-3 against these levels; the rounded score picks the thinking level.
-// ponytail: plain rounding keeps xhigh rare (needs >= 2.5) and still rates short how-to questions high
-// (seen: 1.6); add a confidence cutoff if that wastes tokens.
+// Laya scores the opening request 0-3 against these levels; the last level whose `from` the score
+// reaches picks the thinking level. Its scores bunch below 2.5 (hardest seen: 2.43), so xhigh starts at
+// 2.15, the best cut on 24 labelled prompts (19 right, against 15 with plain rounding).
+// ponytail: cut fitted to a small sample, and short how-to questions still rate high (seen: 1.61);
+// refit from logged scores if xhigh escalates too often. Past the escalation xhigh changes little:
+// pi-claude-cli sends Opus high and xhigh both as max, and any other Claude's xhigh as high.
 const EFFORTS = [
-	{ level: "low", criteria: "Trivial: a typo, a rename, a one-line change, or explaining a command or concept" },
-	{ level: "medium", criteria: "Routine: an ordinary feature, fix, test, or review with a clear path" },
-	{ level: "high", criteria: "Hard: careful reasoning across several steps, files, or design tradeoffs" },
-	{ level: "xhigh", criteria: "Very hard: subtle concurrency or correctness bugs, novel algorithms, or high-stakes design" },
+	{ level: "low", from: 0, criteria: "Trivial: a typo, a rename, a one-line change, or explaining a command or concept" },
+	{ level: "medium", from: 0.5, criteria: "Routine: an ordinary feature, fix, test, or review with a clear path" },
+	{ level: "high", from: 1.5, criteria: "Hard: careful reasoning across several steps, files, or design tradeoffs" },
+	{ level: "xhigh", from: 2.15, criteria: "Very hard: subtle concurrency or correctness bugs, novel algorithms, or high-stakes design" },
 ] as const;
 
 // Laya's per-request state limit is 50k chars; the opening request is what decides the tier.
@@ -91,7 +100,7 @@ async function classifyRequest(request: ModelRouteRequest<RouterState>, ctx: Ext
 					tier: {
 						type: "choice",
 						instructions: "Which kind of software engineering work does `prompt` request?",
-						criteria: Object.fromEntries(Object.entries(TIERS).map(([tier, t]) => [tier, t.criteria])),
+						criteria: Object.fromEntries(Object.entries(TIERS).flatMap(([tier, t]) => ("criteria" in t ? [[tier, t.criteria]] : []))),
 					},
 					effort: {
 						type: "score",
@@ -105,9 +114,11 @@ async function classifyRequest(request: ModelRouteRequest<RouterState>, ctx: Ext
 		const answer = result.stopReason === "stop" ? result.answers.tier : undefined;
 		if (answer?.type !== "choice" || !(answer.choice in TIERS)) return undefined;
 		const probability = answer.probabilities[answer.choice] ?? 0;
-		const tier = probability >= MIN_PROBABILITY ? (answer.choice as Tier) : FALLBACK_TIER;
+		const chosen = probability >= MIN_PROBABILITY ? (answer.choice as Tier) : FALLBACK_TIER;
 		const score = result.answers.effort;
-		const effort = score?.type === "score" ? EFFORTS[Math.round(score.score)]?.level : undefined;
+		const effort = score?.type === "score" ? EFFORTS.findLast((e) => score.score >= e.from)?.level : undefined;
+		const t = TIERS[chosen];
+		const tier = effort === "xhigh" && "xhigh" in t ? t.xhigh : chosen;
 		return effort ? { tier, probability, effort, userLevel: request.thinkingLevel } : { tier, probability };
 	} catch {
 		return undefined;
