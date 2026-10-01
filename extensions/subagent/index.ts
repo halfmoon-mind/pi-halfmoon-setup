@@ -469,6 +469,9 @@ const SubagentParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+	// The default scope's agents, so the model can pick one without a workflow prompt naming it.
+	// Read once per load, which keeps the tool list (and the prompt cache) stable; /reload picks up new agents.
+	const agentList = discoverAgents(process.cwd(), "user").agents.map((a) => `- ${a.name}: ${a.description}`);
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -477,7 +480,7 @@ export default function (pi: ExtensionAPI) {
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
-		].join(" "),
+		].join(" ") + `\n\nAgents:\n${agentList.join("\n")}`,
 		parameters: SubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {

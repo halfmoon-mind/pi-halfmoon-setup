@@ -22,6 +22,7 @@ test("the package's agents load with their models; user and project agents with 
 	const models = Object.fromEntries(discoverAgents(cwd, "both").agents.map((a) => [a.name, `${a.source} ${a.model}`]));
 	assert.deepEqual(models, {
 		scout: "user user/model",
+		"deep-worker": "user openai/gpt-6.1-sol:medium",
 		planner: "project project/model",
 		"plan-reviewer": "user openai/gpt-6-astra:xhigh",
 		reviewer: "user openai/gpt-6-astra:high",
@@ -47,6 +48,8 @@ test("a chain runs each agent on its own model and hands the previous step's out
 
 	let tool: any;
 	subagent({ registerTool: (def: any) => (tool = def) } as any);
+	// The model sees each agent's description, so it can delegate without a workflow prompt.
+	assert.match(tool.description, /\n- deep-worker: Delivers one logic-heavy goal/);
 	const ctx = { cwd: dir, model: { provider: "router", id: "auto" }, hasUI: false };
 	const chain = [
 		{ agent: "scout", task: "find the router" },
