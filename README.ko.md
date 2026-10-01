@@ -159,7 +159,7 @@ pi --model router/auto
 | `deep` 또는 리뷰 단계의 인증 오류 | `openai` 프로바이더 인증 및 해당 모델 접근 권한 확인 |
 | 프로젝트 에이전트가 선택되지 않음 | `agentScope: "both"` 또는 `"project"` 사용 여부 확인 |
 
-Claude 요청은 `claude -p`를 통해 실행됩니다. 따라서 Claude Code의 사용자 설정, 훅, 플러그인, MCP 서버가 요청에 영향을 줄 수 있습니다. 인증 정보와 머신별 UI 설정은 저장소가 아닌 각 머신의 pi·Claude 설정에서 관리하세요.
+Claude 요청은 `claude -p`를 통해 실행됩니다. 따라서 Claude Code의 사용자 설정, 훅, 플러그인이 요청에 영향을 줄 수 있습니다. Claude Code의 MCP 서버와 내장 도구는 웹 검색·가져오기 외에는 쓰지 않습니다. pi의 도구는 MCP 서버를 거쳐 Claude에 전달되고, `claude` 프로세스 하나가 턴 사이에도 대화를 유지합니다. 인증 정보와 머신별 UI 설정은 저장소가 아닌 각 머신의 pi·Claude 설정에서 관리하세요.
 
 ## 저장소 구조
 
@@ -169,6 +169,7 @@ prompts/                    슬래시 명령어용 워크플로 템플릿
 extensions/
   router.ts                 router/auto 및 Laya 프로세스 관리
   router.test.ts            라우터 테스트
+  footer.ts                 라우팅된 tier와 모델을 보여 주는 2줄 하단 표시줄
   test-hooks.ts             테스트에서 pi 패키지를 pi와 같은 방식으로 불러오는 설정
   subagent/                 서브에이전트 실행 및 에이전트 탐색
   pi-claude-cli/            Claude CLI 프로바이더

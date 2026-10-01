@@ -6,8 +6,9 @@
  *
  * Vendored from pi-claude-cli 0.3.1 (MIT, see LICENSE; github.com/rchern/pi-claude-cli),
  * patched for pi 0.99's context shape, to drop the cross-spawn dependency, to report
- * a CLI that exits with an error instead of ending the turn with an empty reply, and to
- * send pi's whole history on every call instead of resuming a CLI session that lost the tool calls.
+ * a CLI error instead of ending the turn with an empty reply, and to keep one CLI process
+ * across pi's calls (pi's tools reach it over MCP) instead of resuming a CLI session that
+ * lost the tool calls, so the CLI keeps its thinking and its prompt cache.
  */
 
 import { getCurrentSystemPrompt, getModels } from "@mariozechner/pi-ai";
@@ -18,7 +19,7 @@ import {
   validateCliAuth,
   killAllProcesses,
 } from "./src/process-manager.js";
-import { getCustomToolDefs, writeMcpConfig } from "./src/mcp-config.js";
+import { getToolDefs, writeMcpConfig } from "./src/mcp-config.js";
 
 // Kill all active Claude subprocesses on process exit to prevent orphans
 process.on("exit", killAllProcesses);
@@ -36,10 +37,10 @@ let mcpConfigResolved = false;
  * Only locks (sets mcpConfigResolved) when getAllTools() returns a
  * real array — if it returns undefined/null (registry not ready),
  * we retry on the next request. Once the registry is ready we
- * commit to the result even if there are zero custom tools.
+ * commit to the result even if there are zero tools.
  *
  * Uses warn-don't-block: failure logs a warning but does not
- * prevent the provider from functioning (built-ins still work).
+ * prevent the provider from answering (without pi's tools).
  */
 function ensureMcpConfig(pi: ExtensionAPI): string | undefined {
   if (mcpConfigResolved) return mcpConfigPath;
@@ -51,19 +52,19 @@ function ensureMcpConfig(pi: ExtensionAPI): string | undefined {
       return mcpConfigPath;
     }
 
-    // Registry is ready — lock regardless of whether custom tools exist
+    // Registry is ready — lock regardless of whether tools exist
     mcpConfigResolved = true;
 
-    const toolDefs = getCustomToolDefs(pi);
+    const toolDefs = getToolDefs(pi);
     if (toolDefs.length > 0) {
       mcpConfigPath = writeMcpConfig(toolDefs);
       console.error(
-        `[pi-claude-cli] MCP config generated with ${toolDefs.length} custom tool(s)`,
+        `[pi-claude-cli] MCP config generated with ${toolDefs.length} tool(s)`,
       );
     }
   } catch (err) {
     console.warn(
-      "[pi-claude-cli] MCP config generation failed, custom tools unavailable:",
+      "[pi-claude-cli] MCP config generation failed, pi's tools unavailable:",
       err,
     );
   }

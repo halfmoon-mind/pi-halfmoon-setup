@@ -71,7 +71,7 @@ function translateImageBlock(piBlock: any): AnthropicContentBlock | null {
  *
  * @returns Array of AnthropicContentBlock with text and translated images
  */
-function buildFinalUserContent(
+export function buildFinalUserContent(
   content: string | any[],
 ): AnthropicContentBlock[] {
   if (typeof content === "string") {
@@ -308,7 +308,9 @@ function contentToText(content: string | any[]): string {
   return content
     .map((block) => {
       if (block.type === "text") return block.text ?? "";
-      if (block.type === "thinking") return ""; // Skip thinking — internal reasoning, not conversation
+      if (block.type === "thinking") {
+        return block.thinking ? `[Thinking] ${block.thinking}` : "";
+      }
       if (block.type === "toolCall") {
         const isCustom = isCustomToolName(block.name);
         if (isCustom) {

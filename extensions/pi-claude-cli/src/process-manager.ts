@@ -2,7 +2,7 @@
  * Process manager for spawning and managing Claude CLI subprocesses.
  *
  * Handles subprocess lifecycle: spawn with correct CLI flags, write NDJSON
- * messages to stdin, force-kill after result (CLI hangs bug), and stderr capture.
+ * messages to stdin, force-kill, and stderr capture.
  * Also provides startup validation for CLI presence and authentication.
  */
 
@@ -43,8 +43,19 @@ export function spawnClaude(
     modelId,
     "--permission-prompt-tool",
     "stdio",
-    // Each call carries pi's whole conversation, so the CLI's own session is never resumed.
+    // Ask before every tool call, whatever defaultMode the user's Claude settings pick.
+    "--permission-mode",
+    "default",
+    // pi's own tools come through the MCP server; of the CLI's, keep only the web tools pi lacks.
+    "--tools",
+    "WebSearch,WebFetch",
+    // Without ToolSearch the user's own MCP servers would load every tool schema up front.
+    "--strict-mcp-config",
+    // The process holds the conversation while it runs; a new one gets pi's history instead.
     "--no-session-persistence",
+    // Opus 5.x omits thinking text by default; the summary is what carries its reasoning into that history.
+    "--thinking-display",
+    "summarized",
   ];
 
   if (systemPrompt) {
@@ -69,6 +80,8 @@ export function spawnClaude(
   const proc = spawn("claude", args, {
     stdio: ["pipe", "pipe", "pipe"],
     cwd: options?.cwd ?? process.cwd(),
+    // A pi tool can take long, or wait for the user to confirm it; the CLI's MCP call waits as long.
+    env: { ...process.env, MCP_TOOL_TIMEOUT: String(24 * 60 * 60 * 1000) },
   });
 
   return proc as ChildProcess;
@@ -146,19 +159,6 @@ export function killAllProcesses(): void {
     forceKillProcess(proc);
   }
   activeProcesses.clear();
-}
-
-/**
- * Force-kill the subprocess after a 500ms grace period.
- * The Claude CLI hangs after emitting the result message (known bug).
- * Brief grace period allows final stdout flushing before force-kill.
- *
- * @param proc - The Claude subprocess to clean up
- */
-export function cleanupProcess(proc: ChildProcess): void {
-  setTimeout(() => {
-    forceKillProcess(proc);
-  }, 500);
 }
 
 /**

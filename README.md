@@ -159,7 +159,7 @@ The footer shows `laya starting`, `laya on`, `laya idle`, `laya unavailable`, or
 | Auth errors in the `deep` tier or the review step | Check the `openai` provider's authentication and your access to the model |
 | A project agent is not picked up | Check that you pass `agentScope: "both"` or `"project"` |
 
-Claude requests run through `claude -p`, so Claude Code's user settings, hooks, plugins, and MCP servers can affect them. Keep credentials and per-machine UI settings in each machine's pi and Claude config, not in this repository.
+Claude requests run through `claude -p`, so Claude Code's user settings, hooks, and plugins can affect them. Its MCP servers and its built-in tools are left out, except web search and fetch; pi's own tools reach Claude through an MCP server, and one `claude` process keeps the conversation between turns. Keep credentials and per-machine UI settings in each machine's pi and Claude config, not in this repository.
 
 ## Repository layout
 
@@ -169,6 +169,7 @@ prompts/                    Workflow templates for slash commands
 extensions/
   router.ts                 router/auto and Laya process management
   router.test.ts            Router tests
+  footer.ts                 Two-line footer with the routed tier and model
   test-hooks.ts             Loads pi's packages in tests the way pi does
   subagent/                 Subagent runs and agent discovery
   pi-claude-cli/            Claude CLI provider
