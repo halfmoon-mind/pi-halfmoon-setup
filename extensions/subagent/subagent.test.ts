@@ -23,6 +23,7 @@ test("the package's agents load with their models; user and project agents with 
 	assert.deepEqual(models, {
 		scout: "user user/model",
 		planner: "project project/model",
+		"plan-reviewer": "user openai/gpt-6-astra:xhigh",
 		reviewer: "user openai/gpt-6-astra:high",
 		worker: "user router/auto",
 	});
