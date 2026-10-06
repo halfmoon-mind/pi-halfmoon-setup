@@ -21,7 +21,7 @@
  */
 
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -80,6 +80,9 @@ interface RouterState {
 	// Thinking level Laya chose, and the user's level at the time; picking another level in pi drops it.
 	effort?: ModelRouteRequest["thinkingLevel"];
 	userLevel?: ModelRouteRequest["thinkingLevel"];
+	// Laya's raw answers, for the dataset log: every tier's probability and the 0-3 effort score.
+	probabilities?: Record<string, number>;
+	score?: number;
 }
 
 function firstUserText(messages: readonly Message[]): string {
@@ -119,7 +122,8 @@ async function classifyRequest(request: ModelRouteRequest<RouterState>, ctx: Ext
 		const effort = score?.type === "score" ? EFFORTS.findLast((e) => score.score >= e.from)?.level : undefined;
 		const t = TIERS[chosen];
 		const tier = effort === "xhigh" && "xhigh" in t ? t.xhigh : chosen;
-		return effort ? { tier, probability, effort, userLevel: request.thinkingLevel } : { tier, probability };
+		const raw = { probability, probabilities: answer.probabilities, score: score?.type === "score" ? score.score : undefined };
+		return effort ? { tier, ...raw, effort, userLevel: request.thinkingLevel } : { tier, ...raw };
 	} catch {
 		return undefined;
 	}
@@ -180,7 +184,12 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// The on/off switch is one file shared by every pi, read on each use so a switch applies everywhere.
-	const switchPath = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "laya.json");
+	const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+	const switchPath = join(agentDir, "laya.json");
+	// One JSONL line per routed session, to refit Laya's cuts or train it later. It also covers subagents,
+	// which run without a session file; `session` joins pi's session file otherwise, whose
+	// thinking_level_change and model_change entries show where the user overrode the route.
+	const datasetPath = join(agentDir, "laya-dataset.jsonl");
 	const layaOff = () => {
 		if (!laya) return false;
 		try {
@@ -362,6 +371,15 @@ export default function (pi: ExtensionAPI) {
 			const { provider, id } = TIERS[state.tier];
 			const model = resolveModel(ctx, provider, id);
 			if (!model) throw new Error(`router/auto: ${provider}/${id} is not in the model catalog`);
+			if (!request.state) {
+				const prompt = firstUserText(request.messages).slice(0, MAX_PROMPT_CHARS);
+				const record = { time: new Date().toISOString(), session: ctx.sessionManager.getSessionId(), mode: ctx.mode, prompt, ...state, model: `${model.provider}/${model.id}`, thinkingLevel: state.effort ?? request.thinkingLevel };
+				try {
+					appendFileSync(datasetPath, `${JSON.stringify(record)}\n`);
+				} catch {
+					// a lost dataset line must never block routing
+				}
+			}
 			// Returning the same state object keeps it; a new object is stored on the first request and
 			// when the user overrides Laya's thinking level.
 			return { model, thinkingLevel: state.effort ?? request.thinkingLevel, state };

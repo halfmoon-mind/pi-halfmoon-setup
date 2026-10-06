@@ -1,7 +1,7 @@
 // Run: node --test extensions/router.test.ts  (Node >= 22.18 strips the types)
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,7 +12,8 @@ const CATALOG = ["claude-sonnet-5-5", "claude-opus-4-5-20251101", "claude-opus-5
 function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<string, string> = {}, effort?: unknown) {
 	// A non-local laya URL keeps pi from starting laya-serve; the switch file goes to a fresh dir.
 	Object.assign(process.env, { LAYA_URL: "http://laya.test/v1", ...env });
-	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "router-test-"));
+	const agentDir = mkdtempSync(join(tmpdir(), "router-test-"));
+	process.env.PI_CODING_AGENT_DIR = agentDir;
 	let route: any;
 	let classifyCalls = 0;
 	let classifyingStatus: string | undefined;
@@ -35,6 +36,8 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 	router(pi);
 	const ctx: any = {
 		hasUI: true,
+		mode: "tui",
+		sessionManager: { getSessionId: () => "session-1" },
 		ui: {
 			notify: (msg: string) => notices.push(msg),
 			setStatus: (key: string, text?: string) => {
@@ -65,6 +68,7 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 		sessionStart: () => handlers.session_start({}, ctx),
 		calls: () => classifyCalls,
 		classifyingStatus: () => classifyingStatus,
+		dataset: () => readFileSync(join(agentDir, "laya-dataset.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)),
 		notices,
 		statuses,
 	};
@@ -110,6 +114,23 @@ test("only work rated xhigh leaves Opus or Sonnet: design climbs to Fable, logic
 	assert.equal((await route("complex", 2.2)).model.id, "claude-fable-5-1");
 	assert.equal((await route("deep", 2.1)).model.id, "claude-opus-5-5");
 	assert.equal((await route("standard", 2.2)).model.id, "claude-sonnet-5-5");
+});
+
+test("each newly routed session logs one dataset line with the prompt and Laya's raw answers", async () => {
+	const s = setup({ ...choice("deep", 0.56), probabilities: { deep: 0.56, complex: 0.3, standard: 0.14 } }, CATALOG, {}, { type: "score", score: 1.9, confidence: 0.25 });
+	const first = await s.route();
+	await s.route(first.state);
+	const [line, ...rest] = s.dataset();
+	assert.equal(rest.length, 0);
+	assert.deepEqual(
+		[line.session, line.mode, line.prompt, line.tier, line.probabilities.complex, line.score, line.model, line.thinkingLevel],
+		["session-1", "tui", "Implement Dijkstra with a Fibonacci heap", "deep", 0.3, 1.9, "pi-claude-cli/claude-opus-5-5", "high"],
+	);
+	// Laya off still logs the prompt, without answers, so it can be labelled later.
+	const off = setup(choice("deep", 0.9));
+	await off.laya("off");
+	await off.route();
+	assert.deepEqual([off.dataset()[0].tier, off.dataset()[0].probabilities], ["complex", undefined]);
 });
 
 test("a near-tie routes to the fallback tier instead of the top choice", async () => {
