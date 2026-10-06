@@ -169,6 +169,10 @@ pi --model router/auto
 
 푸터에는 `laya starting`, `laya on`, `laya idle`, `laya unavailable`, `laya off` 상태가 표시됩니다. `/laya off`는 해당 로컬 포트에서 실행 중인 다른 pi 또는 수동 실행의 `laya-serve`도 종료할 수 있습니다.
 
+### 데이터셋 로그
+
+새로 라우팅된 세션마다(서브에이전트 포함) `~/.pi/agent/laya-dataset.jsonl`에 JSON 한 줄이 추가됩니다(`PI_CODING_AGENT_DIR`을 따름). Laya가 본 프롬프트(최대 16,000자), 티어별 확률, 난이도 원점수, 실제 사용한 티어·모델·thinking 레벨이 기록됩니다. Laya가 꺼진 상태로 라우팅된 세션은 답 없이 기록됩니다. `session`은 pi 세션 파일과 같은 값이며, 그 파일의 `thinking_level_change`, `model_change` 항목으로 사용자가 라우팅을 바꾼 지점을 알 수 있습니다. 프롬프트 원문이 담기므로 세션 파일처럼 다루세요.
+
 ## 문제 해결
 
 | 증상 | 확인할 사항 |
