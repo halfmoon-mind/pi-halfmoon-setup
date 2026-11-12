@@ -1,8 +1,8 @@
 // Run: node --import ./extensions/test-hooks.ts --test extensions/office-read.test.ts
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { crc32, deflateRawSync } from "node:zlib";
 import pdfRead from "./pdf-read.ts";
@@ -57,6 +57,27 @@ function writeZip(name: string, files: Record<string, string | Buffer>): string 
 	return file;
 }
 
+/** A PDF of blank pages, each 100 pt tall and as wide as given. */
+function threePagePdf(widths: number[]): string {
+	const objects = ["<< /Type /Catalog /Pages 2 0 R >>", `<< /Type /Pages /Kids [${widths.map((_, i) => `${3 + i} 0 R`).join(" ")}] /Count ${widths.length} >>`, ...widths.map((w) => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} 100] >>`)];
+	let pdf = "%PDF-1.4\n";
+	const offsets = objects.map((body, i) => {
+		const at = pdf.length;
+		pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
+		return at;
+	});
+	const xref = pdf.length;
+	pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
+	return `${pdf}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+}
+
+/** Width and height from a baseline JPEG's frame header. */
+function jpegSize(base64: string): [number, number] {
+	const jpeg = Buffer.from(base64, "base64");
+	const sof = jpeg.indexOf(Buffer.from([0xff, 0xc0]));
+	return [jpeg.readUInt16BE(sof + 7), jpeg.readUInt16BE(sof + 5)];
+}
+
 let tool: any;
 pdfRead({ registerTool: (t: any) => (tool = t) } as any);
 const read = async (params: object) => (await tool.execute("id", params, undefined, undefined, { cwd: dir })).content as any[];
@@ -67,22 +88,25 @@ test("a workbook comes as a grid per sheet: values as formatted, each formula af
 		"xl/workbook.xml": `<workbook><sheets><sheet name="Budget" sheetId="1" r:id="rId1"/><sheet name="Old" sheetId="2" state="hidden" r:id="rId2"/></sheets></workbook>`,
 		"xl/_rels/workbook.xml.rels": rels({ rId1: "worksheets/sheet1.xml", rId2: "worksheets/sheet2.xml" }),
 		"xl/sharedStrings.xml": `<sst><si><t>Item</t></si><si><r><t>Q</t></r><r><t>1</t></r></si><si><t>A &amp; B</t></si></sst>`,
-		"xl/styles.xml": `<styleSheet><numFmts count="1"><numFmt numFmtId="164" formatCode="0.0%"/></numFmts><cellXfs count="4"><xf numFmtId="0"/><xf numFmtId="164"/><xf numFmtId="14"/><xf numFmtId="4"/></cellXfs></styleSheet>`,
+		"xl/styles.xml": `<styleSheet><numFmts count="2"><numFmt numFmtId="164" formatCode="0.0%"/><numFmt numFmtId="165" formatCode="[h]:mm:ss"/></numFmts><cellXfs count="5"><xf numFmtId="0"/><xf numFmtId="164"/><xf numFmtId="14"/><xf numFmtId="4"/><xf numFmtId="165"/></cellXfs></styleSheet>`,
 		"xl/worksheets/sheet1.xml": `<worksheet><sheetData>
 			<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>
-			<row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2" s="1"><v>0.031</v></c><c r="C2" s="2"><v>46197</v></c><c r="D2" s="3"><v>1234.5</v></c></row>
+			<row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2" s="1"><v>0.031</v></c><c r="C2" s="2"><v>46197</v></c><c r="D2" s="3"><v>1234.5</v></c><c r="E2" s="4"><v>1.5</v></c></row>
 			<row r="4"><c r="A4"><f t="shared" ref="A4:B4" si="0">C2*$B$2</f><v>1432.107</v></c><c r="B4"><f t="shared" si="0"/><v>38.27</v></c><c r="C4"><f>SUM(B2:B3)</f></c></row>
 		</sheetData><mergeCells count="1"><mergeCell ref="A1:B1"/></mergeCells></worksheet>`,
-		"xl/worksheets/sheet2.xml": `<worksheet><sheetData/></worksheet>`,
+		"xl/worksheets/sheet2.xml": `<worksheet><sheetData><row r="1"><c r="XFD1" t="s"><v>0</v></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>${"x".repeat(60_000)}</t></is></c></row><row r="3"><c r="A3" t="s"><v>2</v></c></row></sheetData></worksheet>`,
 	});
 	const all = texts(await read({ path: "budget.xlsx" }));
 	assert.match(all, /^Excel workbook, 2 sheets: Budget, Old\./);
-	assert.match(all, /## Sheet "Budget", merged: A1:B1\n\| \| A \| B \| C \| D \|\n/);
-	assert.match(all, /\| 1 \| Item \| Q1 \|  \|  \|/);
-	assert.match(all, /\| 2 \| A & B \| 3\.1% \| 2026-06-24 \| 1,234\.50 \|/);
+	assert.match(all, /## Sheet "Budget", merged: A1:B1\n\| \| A \| B \| C \| D \| E \|\n/);
+	assert.match(all, /\| 1 \| Item \| Q1 \|  \|  \|  \|/);
+	assert.match(all, /\| 2 \| A & B \| 3\.1% \| 2026-06-24 \| 1,234\.50 \| 36:00:00 \|/);
 	assert.match(all, /\| 4 \| 1432\.107 `=C2\*\$B\$2` \| 38\.27 `=D2\*\$B\$2` \| \(not calculated\) `=SUM\(B2:B3\)` \|/);
-	assert.match(all, /## Sheet "Old" \(hidden\) \(empty\)$/);
-	assert.match(texts(await read({ path: "budget.xlsx", limit: 3 })), /\[Showing lines 1-3 of 10\. Use offset=4 to continue\.\]$/);
+	assert.match(texts(await read({ path: "budget.xlsx", limit: 3 })), /\[Showing lines 1-3 of 15\. Use offset=4 to continue\.\]$/);
+	// A lone cell in the last column, then a row past the 50 KB line cap: neither stops paging.
+	assert.match(texts(await read({ path: "budget.xlsx", offset: 10, limit: 4 })), /^## Sheet "Old" \(hidden\)\n\| \| A \| XFD \|\n\|---\|---\|---\|\n\| 1 \|  \| Item \|\n\n\[Showing lines 10-13 of 15\. Use offset=14 to continue\.\]$/);
+	assert.match(texts(await read({ path: "budget.xlsx", offset: 14 })), /^\| 2 \| x+\n\n\[Line 14 is 58\.6KB, cut to 50\.0KB: read the rest of it with a script\. Use offset=15 to continue\.\]$/);
+	assert.equal(texts(await read({ path: "budget.xlsx", offset: 15 })), "| 3 | A & B |  |");
 });
 
 test("a Word document comes as Markdown with tracked changes, its pictures where they sit, and page headers", async () => {
@@ -107,7 +131,7 @@ test("a Word document comes as Markdown with tracked changes, its pictures where
 	assert.match(blocks[3].text, /After the chart\./);
 });
 
-test("slides come as text with chart data, tables and notes, paged by slide; without LibreOffice, a slide that needs an image gets its embedded pictures", async () => {
+test("slides come as text with chart data, tables and notes, paged by slide; a slide that needs an image gets its LibreOffice render, hidden ones too, or else its embedded pictures", async () => {
 	const sp = (text: string, ph = "") => `<p:sp><p:nvSpPr><p:cNvPr id="2" name="s"/><p:nvPr>${ph}</p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:p><a:r><a:t>${text}</a:t></a:r></a:p></p:txBody></p:sp>`;
 	const slide = (body: string, attrs = "") => `<p:sld${attrs}><p:cSld><p:spTree>${body}</p:spTree></p:cSld></p:sld>`;
 	const cell = (t: string) => `<a:tc><a:txBody><a:p><a:r><a:t>${t}</a:t></a:r></a:p></a:txBody></a:tc>`;
@@ -150,6 +174,19 @@ test("slides come as text with chart data, tables and notes, paged by slide; wit
 		].join("\n"));
 		assert.equal(rest[2].text, "--- slide 3 (hidden) ---\n\n[picture: NPS dashboard]");
 		await assert.rejects(read({ path: "deck.pptx", offset: 4 }), /past the last slide/);
+
+		// With LibreOffice: a stand-in soffice copies a PDF whose pages differ in width, so the image shows which page was rendered.
+		const bin = mkdtempSync(join(tmpdir(), "office-bin-"));
+		writeFileSync(join(dir, "deck-render.pdf"), threePagePdf([100, 200, 300]));
+		writeFileSync(join(bin, "soffice"), `#!/bin/sh\necho "$@" > "${bin}/args"\nwhile [ $# -gt 1 ]; do [ "$1" = --outdir ] && out=$2; shift; done\ncp "${dir}/deck-render.pdf" "$out/deck.pdf"\n`);
+		chmodSync(join(bin, "soffice"), 0o755);
+		process.env.PATH = `${bin}${delimiter}${path}`;
+		const rendered = await read({ path: "deck.pptx", offset: 2 });
+		assert.deepEqual(rendered.map((b) => b.type), ["text", "text", "text", "image"]);
+		assert.match(rendered[0].text, /with an image of slide 3 \(.*\)\.$/);
+		assert.match(readFileSync(join(bin, "args"), "utf8"), /ExportHiddenSlides/);
+		assert.equal(rendered[3].mimeType, "image/jpeg");
+		assert.deepEqual(jpegSize(rendered[3].data), [1100, 367]); // page 3, 300 by 100: the hidden slide keeps its page
 	} finally {
 		process.env.PATH = path;
 	}

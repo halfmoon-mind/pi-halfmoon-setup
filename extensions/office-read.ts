@@ -7,11 +7,13 @@ import { tmpdir } from "node:os";
 import { basename, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { inflateRawSync } from "node:zlib";
-import { resizeImage, truncateHead } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, formatSize, resizeImage, truncateHead } from "@earendil-works/pi-coding-agent";
 
 // Long side of a page image: a letter page at 100 dpi, about 1,200 image tokens.
 export const IMAGE_PX = 1100;
 const DEFAULT_SLIDES = 10;
+// LibreOffice leaves hidden slides out of the PDF unless told, and then page N is slide N.
+const HIDDEN_TOO = 'pdf:impress_pdf_Export:{"ExportHiddenSlides":{"type":"boolean","value":"true"}}';
 const MAX_SLIDES = 20;
 const INSTALL: Record<string, string> = {
 	pandoc: "reading .docx needs pandoc (brew install pandoc, or apt-get install pandoc)",
@@ -46,7 +48,8 @@ export function unzip(file: string): Map<string, () => Buffer> {
 		files.set(zip.toString("utf8", at + 46, nameEnd), () => {
 			const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
 			const data = zip.subarray(start, start + size);
-			return method === 8 ? inflateRawSync(data) : data;
+			// A few KB can inflate to gigabytes: cap each part, far above any real one.
+			return method === 8 ? inflateRawSync(data, { maxOutputLength: 1 << 28 }) : data;
 		});
 		at = nameEnd + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
 	}
@@ -78,7 +81,13 @@ function rels(zip: Zip, part: string): Map<string, string> {
 function page(lines: string[], offset = 1, limit?: number): string {
 	const first = Math.max(1, offset);
 	if (first > lines.length) throw new Error(`offset ${first} is past the last line (${lines.length} lines)`);
-	const shown = truncateHead(lines.slice(first - 1, limit ? first - 1 + limit : undefined).join("\n"));
+	const selected = lines.slice(first - 1, limit ? first - 1 + limit : undefined);
+	const shown = truncateHead(selected.join("\n"));
+	if (shown.firstLineExceedsLimit) {
+		const cut = Buffer.from(selected[0]).subarray(0, DEFAULT_MAX_BYTES).toString();
+		const more = first < lines.length ? ` Use offset=${first + 1} to continue.` : "";
+		return `${cut}\n\n[Line ${first} is ${formatSize(Buffer.byteLength(selected[0]))}, cut to ${formatSize(DEFAULT_MAX_BYTES)}: read the rest of it with a script.${more}]`;
+	}
 	const last = first - 1 + shown.outputLines;
 	return shown.content + (last < lines.length ? `\n\n[Showing lines ${first}-${last} of ${lines.length}. Use offset=${last + 1} to continue.]` : "");
 }
@@ -139,6 +148,11 @@ export function shown(value: string, format: string, date1904 = false): string {
 	const n = Number(value);
 	const code = format.split(";")[0].replace(/"[^"]*"|\[[^\]]*\]|\\.|_.|\*./g, "");
 	if (format === "General" || format === "@" || !Number.isFinite(n)) return Number.isFinite(n) ? String(Number(n.toPrecision(15))) : value;
+	if (/\[[hms]+\]/i.test(format.split(";")[0])) {
+		// Elapsed time, [h]:mm:ss: hours go past 24.
+		const s = Math.round(Math.abs(n) * 86400);
+		return `${n < 0 ? "-" : ""}${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+	}
 	const when = new Date(Math.round((n - (date1904 ? 24107 : 25569)) * 86400000));
 	if (/[dyhs]/i.test(code) && !Number.isNaN(when.getTime())) {
 		const iso = when.toISOString();
@@ -182,7 +196,7 @@ function readXlsx(path: string, offset?: number, limit?: number): Block[] {
 		const rows = new Map<number, Map<number, string>>();
 		const masters = new Map<string, { f: string; row: number; col: number }>();
 		let row = 0;
-		let maxCol = 0;
+		const used = new Set<number>();
 		for (const [, rowTag, body] of sx.matchAll(/<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g)) {
 			row = Number(attr(rowTag, "r") ?? row + 1);
 			let col = 0;
@@ -212,14 +226,15 @@ function readXlsx(path: string, offset?: number, limit?: number): Block[] {
 				if (!text) continue;
 				if (!rows.has(row)) rows.set(row, new Map());
 				rows.get(row)!.set(col, text.replace(/\|/g, "\\|").replace(/\r?\n/g, " "));
-				maxCol = Math.max(maxCol, col);
+				used.add(col);
 			}
 		}
 		const merged = [...sx.matchAll(/<mergeCell ref="([^"]+)"/g)].map((m) => m[1]);
 		lines.push("", `## Sheet "${sheet.name}"${sheet.hidden ? " (hidden)" : ""}${merged.length ? `, merged: ${merged.join(", ")}` : ""}${rows.size ? "" : " (empty)"}`);
 		if (!rows.size) continue;
-		const cols = Array.from({ length: maxCol }, (_, i) => i + 1);
-		lines.push(`| | ${cols.map(colName).join(" | ")} |`, `|---${"|---".repeat(maxCol)}|`);
+		// Only the columns with a value: a lone cell in XFD would otherwise make every row 16,384 cells wide.
+		const cols = [...used].sort((a, b) => a - b);
+		lines.push(`| | ${cols.map(colName).join(" | ")} |`, `|---${"|---".repeat(cols.length)}|`);
 		for (const [r, cells] of [...rows].sort((a, b) => a[0] - b[0])) lines.push(`| ${r} | ${cols.map((c) => cells.get(c) ?? "").join(" | ")} |`);
 	}
 	return [{ type: "text", text: page(lines, offset, limit) }];
@@ -322,13 +337,10 @@ async function readPptx(path: string, offset = 1, limit = DEFAULT_SLIDES, signal
 		try {
 			// Its own profile, so an open LibreOffice window or another read can't block the conversion.
 			// ponytail: renders the whole deck on every read; cache the PDF if big decks get slow.
-			await run("soffice", [`-env:UserInstallation=${pathToFileURL(join(dir, "profile")).href}`, "--headless", "--convert-to", "pdf", "--outdir", dir, path], signal);
+			await run("soffice", [`-env:UserInstallation=${pathToFileURL(join(dir, "profile")).href}`, "--headless", "--convert-to", HIDDEN_TOO, "--outdir", dir, path], signal);
 			const pdf = join(dir, basename(path).replace(/\.\w+$/, ".pdf"));
-			// LibreOffice leaves hidden slides out of the PDF.
-			const visible = slides.map((p) => !/<p:sld\b[^>]*\sshow="0"/.test(xml(zip, p)));
 			for (const s of imaged) {
-				if (!visible[s - 1]) continue;
-				const pdfPage = String(visible.slice(0, s).filter(Boolean).length);
+				const pdfPage = String(s);
 				const jpeg = await run("pdftoppm", ["-f", pdfPage, "-l", pdfPage, "-scale-to", String(IMAGE_PX), "-jpeg", "-singlefile", pdf], signal);
 				images.set(s, [{ type: "image", data: jpeg.toString("base64"), mimeType: "image/jpeg" }]);
 			}
