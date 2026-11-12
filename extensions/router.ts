@@ -30,17 +30,17 @@ import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
 
 // Tier -> physical model. The main session runs only on Opus or Fable, never Sonnet or GPT: Opus is the
-// default, and only work Laya rates xhigh climbs to Fable. GPT stays in subagents (deep-worker, reviewers).
+// default; deep work, and complex work Laya rates xhigh, run on Fable at medium thinking. GPT stays in
+// subagents (deep-worker, reviewers).
 // Claude goes through pi-claude-cli (the logged-in `claude` CLI) so it draws on subscription limits, not extra usage.
 // An id ending in `-*` means the newest version of that family the provider lists (see resolveModel).
-// ponytail: an escalated session stays on Fable for good; point the -high tiers at Opus if Fable's allowance runs short.
+// ponytail: a Fable session stays on Fable for good; point deep and complex-high at Opus if Fable's allowance runs short.
 const TIERS = {
 	standard: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Ordinary features, fixes, reviews, docs, or questions" },
 	complex: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Subtle design, cross-cutting refactors, or hard debugging", xhigh: "complex-high" },
-	deep: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Logic-heavy algorithms, backend internals, or math with a clear goal", xhigh: "deep-high" },
-	// Not offered to Laya: reached only through a tier's `xhigh`, and run at medium thinking.
+	deep: { provider: "pi-claude-cli", id: "claude-fable-*", criteria: "Logic-heavy algorithms, backend internals, or math with a clear goal", thinking: "medium" },
+	// Not offered to Laya: reached only through complex's `xhigh`, and run at medium thinking.
 	"complex-high": { provider: "pi-claude-cli", id: "claude-fable-*", thinking: "medium" },
-	"deep-high": { provider: "pi-claude-cli", id: "claude-fable-*", thinking: "medium" },
 } as const;
 type Tier = keyof typeof TIERS;
 const FALLBACK_TIER: Tier = "complex";
@@ -50,7 +50,7 @@ const FALLBACK_TIER: Tier = "complex";
 // 2.15, the best cut on 24 labelled prompts (19 right, against 15 with plain rounding).
 // ponytail: cut fitted to a small sample, and short how-to questions still rate high (seen: 1.61);
 // refit from logged scores if xhigh escalates too often. xhigh itself only reaches a standard session,
-// since the other tiers escalate to Fable at medium.
+// since deep and complex-high run on Fable at medium.
 const EFFORTS = [
 	{ level: "low", from: 0, criteria: "Trivial: a typo, a rename, a one-line change, or explaining a command or concept" },
 	{ level: "medium", from: 0.5, criteria: "Routine: an ordinary feature, fix, test, or review with a clear path" },

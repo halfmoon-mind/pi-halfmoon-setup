@@ -9,11 +9,11 @@
 
 여러 머신에서 같은 모델 라우터, 서브에이전트, 워크플로 프롬프트를 사용할 수 있습니다. `router/auto`는 첫 사용자 메시지를 한 번 분류하고 세션 동안 선택한 티어를 유지해, 반복적인 모델 전환으로 프롬프트 캐시가 깨지는 일을 피합니다.
 
-![세션을 Opus로 유지하고 아주 어려운 작업만 Fable로 올리는 라우터와 scout·planner·worker·reviewer의 역할을 설명하는 구성도](docs/images/overview.svg)
+![세션을 Opus로 유지하고 논리 중심이거나 아주 어려운 작업은 Fable로 돌리는 라우터와 scout·planner·worker·reviewer의 역할을 설명하는 구성도](docs/images/overview.svg)
 
 ## 주요 기능
 
-- **세션 단위 라우팅** — 메인 세션은 Opus로 두고, 아주 어려운 작업만 Fable로 올리며, thinking 레벨도 난이도에 맞춥니다.
+- **세션 단위 라우팅** — 메인 세션은 Opus로 두고, 논리 중심(`deep`)이거나 아주 어려운 작업은 Fable로 돌리며, thinking 레벨도 난이도에 맞춥니다.
 - **역할별 서브에이전트** — 탐색·계획·구현·리뷰를 독립된 컨텍스트에서 수행합니다.
 - **워크플로 명령어** — `/implement`, `/scout-and-plan`, `/implement-and-review`로 작업을 연결합니다.
 - **종료 전 리뷰 게이트** — pi가 멈추기 전에 다른 모델 계열이 프롬프트의 변경을 리뷰하고, 막히는 문제는 다시 돌려보냅니다.
@@ -96,17 +96,16 @@ pi 입력창에서 프롬프트 명령어 뒤에 작업을 적습니다.
 |---|---|---|
 | `standard` | `pi-claude-cli/claude-opus-*` | 일반 기능 개발, 버그 수정, 리뷰, 문서, 질문 |
 | `complex` | `pi-claude-cli/claude-opus-*` | 복잡한 설계, 여러 영역의 리팩터링, 어려운 디버깅. **기본 폴백** |
-| `deep` | `pi-claude-cli/claude-opus-*` | 알고리즘, 백엔드 내부 구조, 수학 등 논리 중심 작업 |
+| `deep` | `pi-claude-cli/claude-fable-*` | 알고리즘, 백엔드 내부 구조, 수학 등 논리 중심 작업 |
 | `complex-high` | `pi-claude-cli/claude-fable-*` | 난이도가 `xhigh`인 `complex` 작업 |
-| `deep-high` | `pi-claude-cli/claude-fable-*` | 난이도가 `xhigh`인 `deep` 작업 |
 
-메인 세션은 Opus나 Fable에서만 돌고, Sonnet이나 GPT는 쓰지 않습니다. Opus가 기본이며, 매우 어렵다(`xhigh`)고 판단한 작업만 Fable로 올라갑니다. GPT는 다른 모델 계열로 리뷰하거나 논리 중심 하위 작업을 맡는 서브에이전트에만 씁니다. 티어는 푸터와 데이터셋 로그에서 작업 종류를 나타내는 데 계속 쓰입니다. 분류기가 `-high` 티어를 직접 고르지는 않으며, 올라간 세션은 끝까지 그 모델을 유지합니다.
+메인 세션은 Opus나 Fable에서만 돌고, Sonnet이나 GPT는 쓰지 않습니다. Opus가 기본이며, `deep` 작업은 Fable에서 돌고, 매우 어렵다(`xhigh`)고 판단한 `complex` 작업도 Fable로 올라갑니다. GPT는 다른 모델 계열로 리뷰하거나 논리 중심 하위 작업을 맡는 서브에이전트에만 씁니다. 티어는 푸터와 데이터셋 로그에서 작업 종류를 나타내는 데 계속 쓰입니다. 분류기가 `complex-high`를 직접 고르지는 않으며, 올라간 세션은 끝까지 그 모델을 유지합니다.
 
 Claude의 `-*` 설정은 등록된 모델 카탈로그에서 해당 계열의 최신 숫자 버전을 선택합니다. 날짜가 붙은 스냅샷은 제외하므로, 실제 모델 버전은 pi의 카탈로그에 따라 달라집니다.
 
 분류기는 첫 사용자 메시지의 최대 16,000자를 사용합니다. 선택된 답의 확률이 `0.5` 미만이거나 분류기에 접근할 수 없으면 `complex`를 사용합니다. `/laya off` 상태에서도 같은 티어를 사용합니다. 이는 **분류 실패에 대한 폴백**이며, 선택된 모델의 인증·호출 실패 시 다른 프로바이더로 전환하는 기능은 아닙니다.
 
-같은 분류에서 요청의 난이도도 0~3점으로 함께 매겨, 세션의 thinking level을 `low`, `medium`, `high`, `xhigh` 중 하나로 정합니다. Laya가 2.5를 넘는 점수를 거의 주지 않아 `xhigh`는 2.15점부터입니다. Fable로 올라간 세션은 대신 `medium`으로 돌기 때문에, `xhigh`는 `standard` 세션에만 적용됩니다. pi의 레벨은 모든 Claude 모델에서 `claude` CLI의 같은 이름 `--effort` 레벨로 전달됩니다. pi에서 thinking level을 직접 바꾸면 그 세션의 나머지 동안은 사용자가 고른 값을 씁니다. 분류기가 답하지 못하거나 Laya가 꺼져 있으면 처음부터 사용자가 정한 값을 씁니다.
+같은 분류에서 요청의 난이도도 0~3점으로 함께 매겨, 세션의 thinking level을 `low`, `medium`, `high`, `xhigh` 중 하나로 정합니다. Laya가 2.5를 넘는 점수를 거의 주지 않아 `xhigh`는 2.15점부터입니다. Fable 세션(`deep`, `complex-high`)은 대신 `medium`으로 돌기 때문에, `xhigh`는 `standard` 세션에만 적용됩니다. pi의 레벨은 모든 Claude 모델에서 `claude` CLI의 같은 이름 `--effort` 레벨로 전달됩니다. pi에서 thinking level을 직접 바꾸면 그 세션의 나머지 동안은 사용자가 고른 값을 씁니다. 분류기가 답하지 못하거나 Laya가 꺼져 있으면 처음부터 사용자가 정한 값을 씁니다.
 
 ### 에이전트
 
@@ -212,6 +211,7 @@ extensions/
   footer.ts                 라우팅된 tier와 모델을 보여 주는 2줄 하단 표시줄
   review-gate.ts            프롬프트마다 변경을 리뷰하는 종료 전 게이트
   pdf-read.ts               PDF용 read: 페이지 텍스트와 필요한 페이지의 이미지
+  tab-follow-up.ts          에이전트 실행 중 Tab으로 후속 질문 대기열에 추가
   test-hooks.ts             테스트에서 pi 패키지를 pi와 같은 방식으로 불러오는 설정
   subagent/                 서브에이전트 실행 및 에이전트 탐색
   pi-claude-cli/            Claude CLI 프로바이더

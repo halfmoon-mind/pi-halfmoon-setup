@@ -9,11 +9,11 @@
 
 Use the same model router, subagents, and workflow prompts on every machine. `router/auto` classifies the first user message once and keeps the chosen tier for the whole session, so repeated model switches never break the prompt cache.
 
-![Diagram of a router that keeps the session on Opus and moves only very hard work up to Fable, and of the scout, planner, worker, and reviewer roles](docs/images/overview.svg)
+![Diagram of a router that keeps the session on Opus and runs logic-heavy or very hard work on Fable, and of the scout, planner, worker, and reviewer roles](docs/images/overview.svg)
 
 ## Features
 
-- **Per-session routing** — keeps the main session on Opus, moves only very hard work up to Fable, and sets thinking to match.
+- **Per-session routing** — keeps the main session on Opus, runs logic-heavy (`deep`) and very hard work on Fable, and sets thinking to match.
 - **Role-based subagents** — explore, plan, implement, and review in isolated contexts.
 - **Workflow commands** — chain work with `/implement`, `/scout-and-plan`, and `/implement-and-review`.
 - **Stop-time review gate** — another model family reviews each prompt's changes before pi stops, and sends blocking issues back.
@@ -96,17 +96,16 @@ The prompts use the `subagent` tool's `chain` mode and pass each step's output t
 |---|---|---|
 | `standard` | `pi-claude-cli/claude-opus-*` | Everyday features, bug fixes, reviews, docs, questions |
 | `complex` | `pi-claude-cli/claude-opus-*` | Complex design, cross-cutting refactors, hard debugging. **Default fallback** |
-| `deep` | `pi-claude-cli/claude-opus-*` | Logic-heavy work such as algorithms, backend internals, and math |
+| `deep` | `pi-claude-cli/claude-fable-*` | Logic-heavy work such as algorithms, backend internals, and math |
 | `complex-high` | `pi-claude-cli/claude-fable-*` | `complex` work rated `xhigh` |
-| `deep-high` | `pi-claude-cli/claude-fable-*` | `deep` work rated `xhigh` |
 
-The main session runs only on Opus or Fable, never Sonnet or GPT. Opus is the default, and only work rated very hard (`xhigh`) moves up to Fable. GPT stays in subagents, where a different model family reviews or takes logic-heavy subtasks. The tier still labels the work in the footer and the dataset log. The classifier never picks a `-high` tier directly, and an escalated session stays on that model.
+The main session runs only on Opus or Fable, never Sonnet or GPT. Opus is the default; `deep` work runs on Fable, and `complex` work rated very hard (`xhigh`) moves up to Fable. GPT stays in subagents, where a different model family reviews or takes logic-heavy subtasks. The tier still labels the work in the footer and the dataset log. The classifier never picks `complex-high` directly, and an escalated session stays on that model.
 
 A Claude `-*` setting picks the newest numbered version of that family in the registered model catalog. Dated snapshots are excluded, so the actual model version depends on pi's catalog.
 
 The classifier reads up to 16,000 characters of the first user message. When the chosen answer's probability is below `0.5` or the classifier is unreachable, the router uses `complex`. It also uses that tier while Laya is switched off with `/laya off`. This is a **fallback for failed classification**; it does not switch to another provider when the chosen model fails to authenticate or respond.
 
-The same classification also scores how hard the request is from 0 to 3, and the session runs at `low`, `medium`, `high`, or `xhigh` thinking to match; `xhigh` starts at 2.15, since Laya rarely scores above 2.5. A session escalated to Fable runs at `medium` instead, so `xhigh` only reaches a `standard` session. pi's level goes to the `claude` CLI's `--effort` level of the same name for every Claude model. If you pick a thinking level yourself in pi, yours is used for the rest of the session. When the classifier cannot answer, or Laya is off, your level is used from the start.
+The same classification also scores how hard the request is from 0 to 3, and the session runs at `low`, `medium`, `high`, or `xhigh` thinking to match; `xhigh` starts at 2.15, since Laya rarely scores above 2.5. A Fable session (`deep` or `complex-high`) runs at `medium` instead, so `xhigh` only reaches a `standard` session. pi's level goes to the `claude` CLI's `--effort` level of the same name for every Claude model. If you pick a thinking level yourself in pi, yours is used for the rest of the session. When the classifier cannot answer, or Laya is off, your level is used from the start.
 
 ### Agents
 
@@ -212,6 +211,7 @@ extensions/
   footer.ts                 Two-line footer with the routed tier and model
   review-gate.ts            Stop-time review of each prompt's changes
   pdf-read.ts               read for PDFs: page text plus images where needed
+  tab-follow-up.ts          Tab queues a follow-up while the agent runs
   test-hooks.ts             Loads pi's packages in tests the way pi does
   subagent/                 Subagent runs and agent discovery
   pi-claude-cli/            Claude CLI provider

@@ -79,9 +79,9 @@ const choice = (choice: string, p: number) => ({ type: "choice", choice, probabi
 test("classifies the first request, then stays on the stored tier without classifying again", async () => {
 	const s = setup(choice("deep", 0.56));
 	const first = await s.route();
-	assert.deepEqual([first.model.provider, first.model.id, first.state.tier], ["pi-claude-cli", "claude-opus-5-5", "deep"]);
+	assert.deepEqual([first.model.provider, first.model.id, first.state.tier], ["pi-claude-cli", "claude-fable-5-1", "deep"]);
 	const next = await s.route(first.state);
-	assert.equal(next.model.id, "claude-opus-5-5");
+	assert.equal(next.model.id, "claude-fable-5-1");
 	assert.equal(next.state, first.state);
 	assert.equal(s.calls(), 1);
 	assert.equal(s.classifyingStatus(), "classifying…");
@@ -90,8 +90,8 @@ test("classifies the first request, then stays on the stored tier without classi
 
 test("Laya's effort score sets the thinking level until the user picks another one", async () => {
 	const score = (score: number) => ({ type: "score", score, confidence: 0.25 });
-	assert.equal((await setup(choice("deep", 0.9), CATALOG, {}, score(0.18)).route()).thinkingLevel, "low");
-	const s = setup(choice("deep", 0.9), CATALOG, {}, score(1.9));
+	assert.equal((await setup(choice("complex", 0.9), CATALOG, {}, score(0.18)).route()).thinkingLevel, "low");
+	const s = setup(choice("complex", 0.9), CATALOG, {}, score(1.9));
 	const first = await s.route();
 	assert.equal(first.thinkingLevel, "high");
 	assert.equal((await s.route(first.state)).thinkingLevel, "high");
@@ -100,20 +100,23 @@ test("Laya's effort score sets the thinking level until the user picks another o
 	// Going back to the level the session started with keeps the user's choice, not Laya's.
 	assert.equal((await s.route(picked.state, { thinkingLevel: "medium" })).thinkingLevel, "medium");
 	// No effort answer: the user's level stands.
-	assert.equal((await setup(choice("deep", 0.9)).route()).thinkingLevel, "medium");
+	assert.equal((await setup(choice("complex", 0.9)).route()).thinkingLevel, "medium");
 });
 
-test("the main session never runs on Sonnet or GPT: Opus by default, and only work rated xhigh climbs to Fable, for the whole session", async () => {
+test("the main session never runs on Sonnet or GPT: Opus by default, deep work and complex work rated xhigh on Fable at medium, for the whole session", async () => {
 	const score = (score: number) => ({ type: "score", score, confidence: 0.25 });
 	const route = (tier: string, effort: number) => setup(choice(tier, 0.9), CATALOG, {}, score(effort)).route();
-	const s = setup(choice("deep", 0.9), CATALOG, {}, score(2.2));
+	const s = setup(choice("complex", 0.9), CATALOG, {}, score(2.2));
 	const first = await s.route();
-	assert.deepEqual([first.model.id, first.thinkingLevel, s.statuses.router], ["claude-fable-5-1", "medium", "deep-high 90%"]);
+	assert.deepEqual([first.model.id, first.thinkingLevel, s.statuses.router], ["claude-fable-5-1", "medium", "complex-high 90%"]);
 	// The user's own thinking level keeps the escalated model.
 	const picked = await s.route(first.state, { thinkingLevel: "low" });
 	assert.deepEqual([picked.model.id, picked.thinkingLevel], ["claude-fable-5-1", "low"]);
-	assert.equal((await route("complex", 2.2)).model.id, "claude-fable-5-1");
-	assert.equal((await route("deep", 2.1)).model.id, "claude-opus-5-5");
+	assert.equal((await route("complex", 2.1)).model.id, "claude-opus-5-5");
+	for (const effort of [0.2, 2.2]) {
+		const deep = await route("deep", effort);
+		assert.deepEqual([deep.model.id, deep.thinkingLevel, deep.state.tier], ["claude-fable-5-1", "medium", "deep"]);
+	}
 	assert.equal((await route("standard", 0.2)).model.id, "claude-opus-5-5");
 	const standard = await route("standard", 2.2);
 	assert.deepEqual([standard.model.id, standard.thinkingLevel], ["claude-opus-5-5", "xhigh"]);
@@ -127,7 +130,7 @@ test("each newly routed session logs one dataset line with the prompt and Laya's
 	assert.equal(rest.length, 0);
 	assert.deepEqual(
 		[line.session, line.mode, line.prompt, line.tier, line.probabilities.complex, line.score, line.model, line.thinkingLevel],
-		["session-1", "tui", "Implement Dijkstra with a Fibonacci heap", "deep", 0.3, 1.9, "pi-claude-cli/claude-opus-5-5", "high"],
+		["session-1", "tui", "Implement Dijkstra with a Fibonacci heap", "deep", 0.3, 1.9, "pi-claude-cli/claude-fable-5-1", "medium"],
 	);
 	// Laya off still logs the prompt, without answers, so it can be labelled later.
 	const off = setup(choice("deep", 0.9));
