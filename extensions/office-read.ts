@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { inflateRawSync } from "node:zlib";
-import { DEFAULT_MAX_BYTES, formatSize, resizeImage, truncateHead } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, resizeImage, truncateHead } from "@earendil-works/pi-coding-agent";
 
 // Long side of a page image: a letter page at 100 dpi, about 1,200 image tokens.
 export const IMAGE_PX = 1100;
@@ -39,6 +39,7 @@ export function unzip(file: string): Map<string, () => Buffer> {
 	const end = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 5, 6]));
 	if (end < 0) throw new Error(`${file} is not a zip: the Office file may be password-protected or in the old binary format`);
 	const files = new Map<string, () => Buffer>();
+	let expanded = 0;
 	// ponytail: no zip64, so no Office file over 4 GB.
 	for (let at = zip.readUInt32LE(end + 16), n = zip.readUInt16LE(end + 10); n > 0; n--) {
 		const method = zip.readUInt16LE(at + 10);
@@ -48,8 +49,11 @@ export function unzip(file: string): Map<string, () => Buffer> {
 		files.set(zip.toString("utf8", at + 46, nameEnd), () => {
 			const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
 			const data = zip.subarray(start, start + size);
-			// A few KB can inflate to gigabytes: cap each part, far above any real one.
-			return method === 8 ? inflateRawSync(data, { maxOutputLength: 1 << 28 }) : data;
+			// A few KB can inflate to gigabytes: cap each part and the whole read, far above any real file.
+			const out = method === 8 ? inflateRawSync(data, { maxOutputLength: 1 << 28 }) : data;
+			expanded += out.length;
+			if (expanded > 1 << 30) throw new Error(`${file} expands past 1 GB: not read`);
+			return out;
 		});
 		at = nameEnd + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
 	}
@@ -77,11 +81,21 @@ function rels(zip: Zip, part: string): Map<string, string> {
 	return out;
 }
 
+/** A line, or how to build it: a sparse sheet's whole grid can be far bigger than memory, so only shown lines are built. */
+type Line = string | (() => string);
+
 /** Lines from `first` (1-based), up to `limit` and pi's read caps, with how to continue. */
-function page(lines: string[], offset = 1, limit?: number): string {
+function page(lines: Line[], offset = 1, limit?: number): string {
 	const first = Math.max(1, offset);
 	if (first > lines.length) throw new Error(`offset ${first} is past the last line (${lines.length} lines)`);
-	const selected = lines.slice(first - 1, limit ? first - 1 + limit : undefined);
+	const end = limit ? Math.min(lines.length, first - 1 + limit) : lines.length;
+	// Build one line past the caps, as pi's read stores, so truncateHead decides as for the full text.
+	const selected: string[] = [];
+	for (let i = first - 1, bytes = 0; i < end && selected.length <= DEFAULT_MAX_LINES && bytes <= DEFAULT_MAX_BYTES; i++) {
+		const line = lines[i];
+		selected.push(typeof line === "string" ? line : line());
+		bytes += Buffer.byteLength(selected[selected.length - 1]) + 1;
+	}
 	const shown = truncateHead(selected.join("\n"));
 	if (shown.firstLineExceedsLimit) {
 		const cut = Buffer.from(selected[0]).subarray(0, DEFAULT_MAX_BYTES).toString();
@@ -137,7 +151,7 @@ async function readDocx(path: string, offset?: number, limit?: number, signal?: 
 const BUILTIN_FORMATS: Record<string, string> = {
 	0: "General", 1: "0", 2: "0.00", 3: "#,##0", 4: "#,##0.00", 9: "0%", 10: "0.00%", 11: "0.00E+00", 14: "yyyy-mm-dd",
 	15: "d-mmm-yy", 16: "d-mmm", 17: "mmm-yy", 18: "h:mm", 19: "h:mm:ss", 20: "h:mm", 21: "h:mm:ss", 22: "yyyy-mm-dd h:mm",
-	37: "#,##0", 38: "#,##0", 39: "#,##0.00", 40: "#,##0.00", 45: "mm:ss", 46: "h:mm:ss", 47: "mm:ss", 49: "@",
+	37: "#,##0", 38: "#,##0", 39: "#,##0.00", 40: "#,##0.00", 45: "mm:ss", 46: "[h]:mm:ss", 47: "mm:ss", 49: "@",
 };
 const colName = (c: number): string => (c > 26 ? colName(Math.floor((c - 1) / 26)) : "") + String.fromCharCode(65 + ((c - 1) % 26));
 const colNum = (s: string) => [...s].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
@@ -148,10 +162,18 @@ export function shown(value: string, format: string, date1904 = false): string {
 	const n = Number(value);
 	const code = format.split(";")[0].replace(/"[^"]*"|\[[^\]]*\]|\\.|_.|\*./g, "");
 	if (format === "General" || format === "@" || !Number.isFinite(n)) return Number.isFinite(n) ? String(Number(n.toPrecision(15))) : value;
-	if (/\[[hms]+\]/i.test(format.split(";")[0])) {
-		// Elapsed time, [h]:mm:ss: hours go past 24.
-		const s = Math.round(Math.abs(n) * 86400);
-		return `${n < 0 ? "-" : ""}${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+	const elapsed = /\[(h+|m+|s+)\](.*)/i.exec(format.split(";")[0]);
+	if (elapsed) {
+		// Elapsed time ([h]:mm:ss, [m]:ss, [s]): the bracketed unit counts past its usual wrap.
+		const sizes = { h: [3600, 60, 1], m: [60, 1], s: [1] }[elapsed[1][0].toLowerCase() as "h" | "m" | "s"];
+		const fields = sizes.filter((size, i) => i === 0 || (size === 60 ? /m/i : /s/i).test(elapsed[2]));
+		let left = Math.round(Math.abs(n) * 86400);
+		const parts = fields.map((size, i) => {
+			const v = Math.floor(left / size);
+			left -= v * size;
+			return i ? String(v).padStart(2, "0") : String(v);
+		});
+		return (n < 0 ? "-" : "") + parts.join(":");
 	}
 	const when = new Date(Math.round((n - (date1904 ? 24107 : 25569)) * 86400000));
 	if (/[dyhs]/i.test(code) && !Number.isNaN(when.getTime())) {
@@ -190,7 +212,7 @@ function readXlsx(path: string, offset?: number, limit?: number): Block[] {
 	);
 
 	const sheets = [...book.matchAll(/<sheet\b[^>]*>/g)].map(([tag]) => ({ name: decode(attr(tag, "name") ?? ""), part: bookRels.get(attr(tag, "r:id") ?? ""), hidden: !!attr(tag, "state")?.endsWith("idden") }));
-	const lines = [`Excel workbook, ${sheets.length} sheets: ${sheets.map((s) => s.name).join(", ")}. Each comes as a grid with column letters and row numbers; a formula follows its value in backticks. For sums or filters over many rows, compute with a script rather than reading every row.`];
+	const lines: Line[] = [`Excel workbook, ${sheets.length} sheets: ${sheets.map((s) => s.name).join(", ")}. Each comes as a grid with column letters and row numbers; a formula follows its value in backticks. For sums or filters over many rows, compute with a script rather than reading every row.`];
 	for (const sheet of sheets) {
 		const sx = sheet.part ? xml(zip, sheet.part) : "";
 		const rows = new Map<number, Map<number, string>>();
@@ -234,8 +256,8 @@ function readXlsx(path: string, offset?: number, limit?: number): Block[] {
 		if (!rows.size) continue;
 		// Only the columns with a value: a lone cell in XFD would otherwise make every row 16,384 cells wide.
 		const cols = [...used].sort((a, b) => a - b);
-		lines.push(`| | ${cols.map(colName).join(" | ")} |`, `|---${"|---".repeat(cols.length)}|`);
-		for (const [r, cells] of [...rows].sort((a, b) => a[0] - b[0])) lines.push(`| ${r} | ${cols.map((c) => cells.get(c) ?? "").join(" | ")} |`);
+		lines.push(() => `| | ${cols.map(colName).join(" | ")} |`, () => `|---${"|---".repeat(cols.length)}|`);
+		for (const [r, cells] of [...rows].sort((a, b) => a[0] - b[0])) lines.push(() => `| ${r} | ${cols.map((c) => cells.get(c) ?? "").join(" | ")} |`);
 	}
 	return [{ type: "text", text: page(lines, offset, limit) }];
 }
@@ -248,7 +270,7 @@ const paragraphs = (x: string) =>
 		.map(([, p]) => decode(p.replace(/<a:br\b[^>]*>/g, "<a:t>\n</a:t>").match(/<a:t>[^<]*<\/a:t>/g)?.map((t) => t.slice(5, -6)).join("") ?? ""))
 		.filter((t) => t.trim());
 
-function chartTable(x: string): string {
+export function chartTable(x: string): string {
 	const points = (part = "") => {
 		const out: string[] = [];
 		for (const [, i, v] of part.matchAll(/<c:pt idx="(\d+)"[^>]*>\s*<c:v>([^<]*)<\/c:v>/g)) out[Number(i)] = decode(v);
@@ -262,8 +284,14 @@ function chartTable(x: string): string {
 	const title = paragraphs(/<c:title>[\s\S]*?<\/c:title>/.exec(x)?.[0] ?? "").join(" ");
 	const n = Math.max(0, ...series.flatMap((s) => [s.cats.length, s.vals.length]));
 	const cats = series.find((s) => s.cats.length)?.cats ?? [];
+	const head = `Chart${title ? ` "${title}"` : ""} (${/<c:(\w+Chart)>/.exec(x)?.[1] ?? "chart"}):`;
+	// Series with their own X values (a scatter chart) can't share one category column: list each point.
+	if (series.some((s) => s.cats.length && s.cats.join("\0") !== cats.join("\0"))) {
+		const rows = series.flatMap((s) => s.vals.map((y, i) => `| ${decode(s.name)} | ${s.cats[i] ?? i + 1} | ${y ?? ""} |`));
+		return [head, "| Series | X | Y |", "|---|---|---|", ...rows].join("\n");
+	}
 	return [
-		`Chart${title ? ` "${title}"` : ""} (${/<c:(\w+Chart)>/.exec(x)?.[1] ?? "chart"}):`,
+		head,
 		`| Category | ${series.map((s) => decode(s.name)).join(" | ")} |`,
 		`|---${"|---".repeat(series.length)}|`,
 		...Array.from({ length: n }, (_, i) => `| ${cats[i] ?? i + 1} | ${series.map((s) => s.vals[i] ?? "").join(" | ")} |`),

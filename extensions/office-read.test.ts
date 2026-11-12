@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { crc32, deflateRawSync } from "node:zlib";
+import { chartTable } from "./office-read.ts";
 import pdfRead from "./pdf-read.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "office-read-"));
@@ -78,6 +79,8 @@ function jpegSize(base64: string): [number, number] {
 	return [jpeg.readUInt16BE(sof + 7), jpeg.readUInt16BE(sof + 5)];
 }
 
+const colName = (c: number): string => (c > 26 ? colName(Math.floor((c - 1) / 26)) : "") + String.fromCharCode(65 + ((c - 1) % 26));
+
 let tool: any;
 pdfRead({ registerTool: (t: any) => (tool = t) } as any);
 const read = async (params: object) => (await tool.execute("id", params, undefined, undefined, { cwd: dir })).content as any[];
@@ -88,25 +91,45 @@ test("a workbook comes as a grid per sheet: values as formatted, each formula af
 		"xl/workbook.xml": `<workbook><sheets><sheet name="Budget" sheetId="1" r:id="rId1"/><sheet name="Old" sheetId="2" state="hidden" r:id="rId2"/></sheets></workbook>`,
 		"xl/_rels/workbook.xml.rels": rels({ rId1: "worksheets/sheet1.xml", rId2: "worksheets/sheet2.xml" }),
 		"xl/sharedStrings.xml": `<sst><si><t>Item</t></si><si><r><t>Q</t></r><r><t>1</t></r></si><si><t>A &amp; B</t></si></sst>`,
-		"xl/styles.xml": `<styleSheet><numFmts count="2"><numFmt numFmtId="164" formatCode="0.0%"/><numFmt numFmtId="165" formatCode="[h]:mm:ss"/></numFmts><cellXfs count="5"><xf numFmtId="0"/><xf numFmtId="164"/><xf numFmtId="14"/><xf numFmtId="4"/><xf numFmtId="165"/></cellXfs></styleSheet>`,
+		"xl/styles.xml": `<styleSheet><numFmts count="2"><numFmt numFmtId="164" formatCode="0.0%"/><numFmt numFmtId="165" formatCode="[m]:ss"/></numFmts><cellXfs count="6"><xf numFmtId="0"/><xf numFmtId="164"/><xf numFmtId="14"/><xf numFmtId="4"/><xf numFmtId="46"/><xf numFmtId="165"/></cellXfs></styleSheet>`,
 		"xl/worksheets/sheet1.xml": `<worksheet><sheetData>
 			<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>
-			<row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2" s="1"><v>0.031</v></c><c r="C2" s="2"><v>46197</v></c><c r="D2" s="3"><v>1234.5</v></c><c r="E2" s="4"><v>1.5</v></c></row>
+			<row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2" s="1"><v>0.031</v></c><c r="C2" s="2"><v>46197</v></c><c r="D2" s="3"><v>1234.5</v></c><c r="E2" s="4"><v>1.5</v></c><c r="F2" s="5"><v>1.5</v></c></row>
 			<row r="4"><c r="A4"><f t="shared" ref="A4:B4" si="0">C2*$B$2</f><v>1432.107</v></c><c r="B4"><f t="shared" si="0"/><v>38.27</v></c><c r="C4"><f>SUM(B2:B3)</f></c></row>
 		</sheetData><mergeCells count="1"><mergeCell ref="A1:B1"/></mergeCells></worksheet>`,
 		"xl/worksheets/sheet2.xml": `<worksheet><sheetData><row r="1"><c r="XFD1" t="s"><v>0</v></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>${"x".repeat(60_000)}</t></is></c></row><row r="3"><c r="A3" t="s"><v>2</v></c></row></sheetData></worksheet>`,
 	});
 	const all = texts(await read({ path: "budget.xlsx" }));
 	assert.match(all, /^Excel workbook, 2 sheets: Budget, Old\./);
-	assert.match(all, /## Sheet "Budget", merged: A1:B1\n\| \| A \| B \| C \| D \| E \|\n/);
-	assert.match(all, /\| 1 \| Item \| Q1 \|  \|  \|  \|/);
-	assert.match(all, /\| 2 \| A & B \| 3\.1% \| 2026-06-24 \| 1,234\.50 \| 36:00:00 \|/);
+	assert.match(all, /## Sheet "Budget", merged: A1:B1\n\| \| A \| B \| C \| D \| E \| F \|\n/);
+	assert.match(all, /\| 1 \| Item \| Q1 \|  \|  \|  \|  \|/);
+	assert.match(all, /\| 2 \| A & B \| 3\.1% \| 2026-06-24 \| 1,234\.50 \| 36:00:00 \| 2160:00 \|/);
 	assert.match(all, /\| 4 \| 1432\.107 `=C2\*\$B\$2` \| 38\.27 `=D2\*\$B\$2` \| \(not calculated\) `=SUM\(B2:B3\)` \|/);
 	assert.match(texts(await read({ path: "budget.xlsx", limit: 3 })), /\[Showing lines 1-3 of 15\. Use offset=4 to continue\.\]$/);
 	// A lone cell in the last column, then a row past the 50 KB line cap: neither stops paging.
 	assert.match(texts(await read({ path: "budget.xlsx", offset: 10, limit: 4 })), /^## Sheet "Old" \(hidden\)\n\| \| A \| XFD \|\n\|---\|---\|---\|\n\| 1 \|  \| Item \|\n\n\[Showing lines 10-13 of 15\. Use offset=14 to continue\.\]$/);
 	assert.match(texts(await read({ path: "budget.xlsx", offset: 14 })), /^\| 2 \| x+\n\n\[Line 14 is 58\.6KB, cut to 50\.0KB: read the rest of it with a script\. Use offset=15 to continue\.\]$/);
 	assert.equal(texts(await read({ path: "budget.xlsx", offset: 15 })), "| 3 | A & B |  |");
+
+	// 16,384 cells on the diagonal: the whole grid would be about 800 MB, so only the lines shown are built.
+	const diagonal = Array.from({ length: 16384 }, (_, i) => `<row r="${i + 1}"><c r="${colName(i + 1)}${i + 1}"><v>${i}</v></c></row>`).join("");
+	writeZip("diagonal.xlsx", {
+		"xl/workbook.xml": `<workbook><sheets><sheet name="D" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": rels({ rId1: "worksheets/sheet1.xml" }),
+		"xl/worksheets/sheet1.xml": `<worksheet><sheetData>${diagonal}</sheetData></worksheet>`,
+	});
+	assert.match(texts(await read({ path: "diagonal.xlsx" })), /\[Showing lines 1-3 of 16389\. Use offset=4 to continue\.\]$/);
+	assert.match(texts(await read({ path: "diagonal.xlsx", offset: 6 })), /^\| 1 \| 0 \|  \|[^]*\[Showing lines 6-6 of 16389\. Use offset=7 to continue\.\]$/);
+});
+
+test("a scatter chart's series keep their own X values", () => {
+	const pts = (vs: number[]) => vs.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join("");
+	const ser = (name: string, xs: number[], ys: number[]) =>
+		`<c:ser><c:tx><c:v>${name}</c:v></c:tx><c:xVal><c:numRef><c:numCache>${pts(xs)}</c:numCache></c:numRef></c:xVal><c:yVal><c:numRef><c:numCache>${pts(ys)}</c:numCache></c:numRef></c:yVal></c:ser>`;
+	assert.equal(
+		chartTable(`<c:chart><c:plotArea><c:scatterChart>${ser("A", [1, 2], [10, 11])}${ser("B", [100], [20])}</c:scatterChart></c:plotArea></c:chart>`),
+		"Chart (scatterChart):\n| Series | X | Y |\n|---|---|---|\n| A | 1 | 10 |\n| A | 2 | 11 |\n| B | 100 | 20 |",
+	);
 });
 
 test("a Word document comes as Markdown with tracked changes, its pictures where they sit, and page headers", async () => {
