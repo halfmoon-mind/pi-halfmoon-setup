@@ -230,7 +230,9 @@ export default function (pi: ExtensionAPI) {
 	// Restarted on spawn and after each classification.
 	function touchLaya() {
 		clearTimeout(idleTimer);
-		idleTimer = setTimeout(() => {
+		idleTimer = setTimeout(async () => {
+			// Still loading (the first run downloads the model): stopping it now would restart the download from zero.
+			if (child && !(await healthy())) return touchLaya();
 			stopLaya();
 			void updateStatus();
 		}, LAYA_IDLE_MS);
