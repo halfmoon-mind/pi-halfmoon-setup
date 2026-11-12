@@ -1,6 +1,8 @@
 /**
  * router/auto - a virtual model that classifies the first user message once, then stays on the
  * chosen model for the rest of the session so the prompt cache is never invalidated by routing.
+ * The one exception is a quick (question-only) session, which classifies each new user message
+ * until one needs more than Sonnet.
  * The same classification sets the thinking level, until the user picks another one in pi.
  *
  * Classifier backend (swap with one env var, no code change):
@@ -29,14 +31,17 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
 
-// Tier -> physical model. The main session runs only on Opus or Fable, never Sonnet or GPT: Opus is the
-// default; deep work, and complex work Laya rates xhigh, run on Fable at medium thinking. GPT stays in
-// subagents (deep-worker, reviewers).
+// Tier -> physical model. Opus is the default; deep work, and complex work Laya rates xhigh, run on Fable
+// at medium thinking; questions that change no code run on Sonnet at medium. GPT stays in subagents
+// (deep-worker, reviewers).
 // Claude goes through pi-claude-cli (the logged-in `claude` CLI) so it draws on subscription limits, not extra usage.
 // An id ending in `-*` means the newest version of that family the provider lists (see resolveModel).
 // ponytail: a Fable session stays on Fable for good; point deep and complex-high at Opus if Fable's allowance runs short.
 const TIERS = {
-	standard: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Ordinary features, fixes, reviews, docs, or questions" },
+	// Not sticky: a Q&A opener often turns into work, so each new user message is classified again until
+	// another tier wins. Moving to Opus costs one cache miss, which a short Q&A history makes cheap.
+	quick: { provider: "pi-claude-cli", id: "claude-sonnet-*", criteria: "A question, explanation, or greeting that asks for no code change", thinking: "medium" },
+	standard: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Ordinary features, fixes, reviews, or docs" },
 	complex: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Subtle design, cross-cutting refactors, or hard debugging", xhigh: "complex-high" },
 	deep: { provider: "pi-claude-cli", id: "claude-fable-*", criteria: "Logic-heavy algorithms, backend internals, or math with a clear goal", thinking: "medium" },
 	// Not offered to Laya: reached only through complex's `xhigh`, and run at medium thinking.
@@ -84,8 +89,9 @@ interface RouterState {
 	score?: number;
 }
 
-function firstUserText(messages: readonly Message[]): string {
-	const content = messages.find((message) => message.role === "user")?.content ?? "";
+// The latest user message: the first one for a new session, the new one when a quick session reclassifies.
+function latestUserText(messages: readonly Message[]): string {
+	const content = messages.findLast((message) => message.role === "user")?.content ?? "";
 	if (typeof content === "string") return content;
 	return content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
 }
@@ -97,7 +103,7 @@ async function classifyRequest(request: ModelRouteRequest<RouterState>, ctx: Ext
 		const result = await ctx.modelRegistry.classify(
 			classifier,
 			{
-				state: { prompt: firstUserText(request.messages).slice(0, MAX_PROMPT_CHARS) },
+				state: { prompt: latestUserText(request.messages).slice(0, MAX_PROMPT_CHARS) },
 				questions: {
 					tier: {
 						type: "choice",
@@ -348,7 +354,9 @@ export default function (pi: ExtensionAPI) {
 			if (request.reason === "direct" && request.previous) {
 				return { model: request.previous.model, thinkingLevel: request.previous.thinkingLevel ?? request.thinkingLevel };
 			}
-			let state = request.state;
+			const prior = request.state;
+			const fresh = !prior || (prior.tier === "quick" && request.reason === "user");
+			let state = fresh ? undefined : prior;
 			if (!state) {
 				// Switched off with /laya off: no classification, and no warning since it is deliberate.
 				const off = layaOff();
@@ -366,6 +374,11 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(`router/auto: classifier unavailable, using ${FALLBACK_TIER}`, "warning");
 				}
 				state = classified ?? { tier: FALLBACK_TIER, unclassified: true };
+				// A thinking level the user picked earlier in this quick session still wins over Laya's new one.
+				if (prior && (!prior.effort || request.thinkingLevel !== prior.userLevel)) {
+					const { effort: _effort, userLevel: _userLevel, ...rest } = state;
+					state = rest;
+				}
 			}
 			// The user picked another thinking level after Laya chose one; theirs wins for the rest of the session.
 			if (state.effort && request.thinkingLevel !== state.userLevel) state = { tier: state.tier, probability: state.probability };
@@ -374,8 +387,8 @@ export default function (pi: ExtensionAPI) {
 			const { provider, id } = TIERS[state.tier];
 			const model = resolveModel(ctx, provider, id);
 			if (!model) throw new Error(`router/auto: ${provider}/${id} is not in the model catalog`);
-			if (!request.state) {
-				const prompt = firstUserText(request.messages).slice(0, MAX_PROMPT_CHARS);
+			if (fresh) {
+				const prompt = latestUserText(request.messages).slice(0, MAX_PROMPT_CHARS);
 				const record = { time: new Date().toISOString(), session: ctx.sessionManager.getSessionId(), mode: ctx.mode, prompt, ...state, model: `${model.provider}/${model.id}`, thinkingLevel: state.effort ?? request.thinkingLevel };
 				try {
 					appendFileSync(datasetPath, `${JSON.stringify(record)}\n`);

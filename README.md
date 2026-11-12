@@ -7,7 +7,7 @@
 
 **A personal [pi](https://pi.dev) package that picks a model from the first request and splits work across role-based agents.**
 
-Use the same model router, subagents, and workflow prompts on every machine. `router/auto` classifies the first user message once and keeps the chosen tier for the whole session, so repeated model switches never break the prompt cache.
+Use the same model router, subagents, and workflow prompts on every machine. `router/auto` classifies the first user message once and keeps the chosen tier for the whole session, so repeated model switches never break the prompt cache. The exception is a question-only `quick` session, which classifies each new message until one needs more than Sonnet.
 
 ![Diagram of a router that keeps the session on Opus and runs logic-heavy or very hard work on Fable, and of the scout, planner, worker, and reviewer roles](docs/images/overview.svg)
 
@@ -96,12 +96,13 @@ The prompts use the `subagent` tool's `chain` mode and pass each step's output t
 
 | Tier | Model setting | Used for |
 |---|---|---|
-| `standard` | `pi-claude-cli/claude-opus-*` | Everyday features, bug fixes, reviews, docs, questions |
+| `quick` | `pi-claude-cli/claude-sonnet-*` | Questions, explanations, and greetings that ask for no code change |
+| `standard` | `pi-claude-cli/claude-opus-*` | Everyday features, bug fixes, reviews, docs |
 | `complex` | `pi-claude-cli/claude-opus-*` | Complex design, cross-cutting refactors, hard debugging. **Default fallback** |
 | `deep` | `pi-claude-cli/claude-fable-*` | Logic-heavy work such as algorithms, backend internals, and math |
 | `complex-high` | `pi-claude-cli/claude-fable-*` | `complex` work rated `xhigh` |
 
-The main session runs only on Opus or Fable, never Sonnet or GPT. Opus is the default; `deep` work runs on Fable, and `complex` work rated very hard (`xhigh`) moves up to Fable. GPT stays in subagents, where a different model family reviews or takes logic-heavy subtasks. The tier still labels the work in the footer and the dataset log. The classifier never picks `complex-high` directly, and an escalated session stays on that model.
+The main session never runs on GPT. Opus is the default; a `quick` question runs on Sonnet at `medium` thinking, and each new user message in that session is classified again, so the session moves to Opus or Fable (and stays there) once a message asks for real work. That move costs one prompt-cache miss. `deep` work runs on Fable, and `complex` work rated very hard (`xhigh`) moves up to Fable. GPT stays in subagents, where a different model family reviews or takes logic-heavy subtasks. The tier still labels the work in the footer and the dataset log. The classifier never picks `complex-high` directly, and an escalated session stays on that model.
 
 A Claude `-*` setting picks the newest numbered version of that family in the registered model catalog. Dated snapshots are excluded, so the actual model version depends on pi's catalog.
 

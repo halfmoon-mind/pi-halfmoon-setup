@@ -18,6 +18,7 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 	let classifyCalls = 0;
 	let classifyingStatus: string | undefined;
 	const notices: string[] = [];
+	const prompts: string[] = [];
 	const statuses: Record<string, string | undefined> = {};
 	const commands: Record<string, any> = {};
 	const handlers: Record<string, any> = {};
@@ -47,8 +48,9 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 		},
 		modelRegistry: {
 			findOfType: () => (answer === "missing" ? undefined : { id: "jev-latest" }),
-			classify: async () => {
+			classify: async (_model: unknown, request: any) => {
 				classifyCalls++;
+				prompts.push(request.state.prompt);
 				classifyingStatus = statuses.router;
 				return { stopReason: "stop", answers: { tier: answer, effort } };
 			},
@@ -68,6 +70,10 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 		laya: (args: string) => commands.laya.handler(args, ctx),
 		sessionStart: () => handlers.session_start({}, ctx),
 		calls: () => classifyCalls,
+		answer: (next: unknown) => {
+			answer = next;
+		},
+		prompts,
 		classifyingStatus: () => classifyingStatus,
 		dataset: () => readFileSync(join(agentDir, "laya-dataset.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)),
 		notices,
@@ -104,7 +110,7 @@ test("Laya's effort score sets the thinking level until the user picks another o
 	assert.equal((await setup(choice("complex", 0.9)).route()).thinkingLevel, "medium");
 });
 
-test("the main session never runs on Sonnet or GPT: Opus by default, deep work and complex work rated xhigh on Fable at medium, for the whole session", async () => {
+test("the main session never runs on GPT: Opus by default, deep work and complex work rated xhigh on Fable at medium, for the whole session", async () => {
 	const score = (score: number) => ({ type: "score", score, confidence: 0.25 });
 	const route = (tier: string, effort: number) => setup(choice(tier, 0.9), CATALOG, {}, score(effort)).route();
 	const s = setup(choice("complex", 0.9), CATALOG, {}, score(2.2));
@@ -121,6 +127,33 @@ test("the main session never runs on Sonnet or GPT: Opus by default, deep work a
 	assert.equal((await route("standard", 0.2)).model.id, "claude-opus-5-5");
 	const standard = await route("standard", 2.2);
 	assert.deepEqual([standard.model.id, standard.thinkingLevel], ["claude-opus-5-5", "xhigh"]);
+});
+
+test("a quick session runs on Sonnet at medium and classifies each new user message until another tier wins", async () => {
+	const s = setup(choice("quick", 0.8), CATALOG, {}, { type: "score", score: 1.6, confidence: 0.25 });
+	const hi = [{ role: "user", content: "hi" }];
+	const first = await s.route(undefined, { messages: hi });
+	assert.deepEqual([first.model.id, first.thinkingLevel, first.state.tier], ["claude-sonnet-5-5", "medium", "quick"]);
+	// Tool results inside the same turn stay on Sonnet without classifying.
+	assert.equal((await s.route(first.state, { reason: "continuation", messages: hi })).state, first.state);
+	assert.equal(s.calls(), 1);
+	// The next user message is classified on its own; once it needs Opus the session stays there.
+	s.answer(choice("standard", 0.9));
+	const messages = [...hi, { role: "assistant", content: "Hi!" }, { role: "user", content: "fix the footer" }];
+	const work = await s.route(first.state, { messages });
+	assert.deepEqual([work.model.id, work.state.tier, s.prompts[1]], ["claude-opus-5-5", "standard", "fix the footer"]);
+	await s.route(work.state, { messages });
+	assert.equal(s.calls(), 2);
+	assert.deepEqual(s.dataset().map((line) => line.prompt), ["hi", "fix the footer"]);
+});
+
+test("a thinking level the user picked in a quick session survives reclassification", async () => {
+	const s = setup(choice("quick", 0.8), CATALOG, {}, { type: "score", score: 1.6, confidence: 0.25 });
+	const first = await s.route();
+	const picked = await s.route(first.state, { thinkingLevel: "low" });
+	s.answer(choice("standard", 0.9));
+	const work = await s.route(picked.state, { thinkingLevel: "low" });
+	assert.deepEqual([work.model.id, work.thinkingLevel], ["claude-opus-5-5", "low"]);
 });
 
 test("each newly routed session logs one dataset line with the prompt and Laya's raw answers", async () => {
