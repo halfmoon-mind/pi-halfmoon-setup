@@ -62,7 +62,7 @@ test("a chain runs each agent on its own model and hands the previous step's out
 	assert.deepEqual(
 		calls.map(({ args }) => [flag(args, "--model"), flag(args, "--tools"), args.at(-1)]),
 		[
-			["pi-claude-cli/claude-haiku", "read,grep,find,ls,bash", "Task: find the router"],
+			["pi-claude-cli/claude-haiku:high", "read,grep,find,ls,bash", "Task: find the router"],
 			["pi-claude-cli/claude-opus:high", "read,grep,find,ls", "Task: plan from answer to Task: find the router"],
 		],
 	);
