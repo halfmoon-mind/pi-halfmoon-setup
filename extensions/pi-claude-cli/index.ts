@@ -78,15 +78,9 @@ function ensureMcpConfig(pi: ExtensionAPI): string | undefined {
     const toolDefs = getToolDefs(pi);
     if (toolDefs.length > 0) {
       mcpConfigPath = writeMcpConfig(toolDefs);
-      console.error(
-        `[pi-claude-cli] MCP config generated with ${toolDefs.length} tool(s)`,
-      );
     }
   } catch (err) {
-    console.warn(
-      "[pi-claude-cli] MCP config generation failed, pi's tools unavailable:",
-      err,
-    );
+    ui?.notify(`pi-claude-cli: MCP config generation failed, pi's tools unavailable: ${err}`, "warning");
   }
   return mcpConfigPath;
 }
