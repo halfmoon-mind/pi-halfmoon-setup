@@ -9,12 +9,14 @@
  * the one the latest response used, shown once. `*` marks uncommitted changes. The cost is what the
  * session, its subagents included, would cost at API prices, subscriptions or not.
  *
- * The "gpt" status, the ChatGPT subscription's usage, is set here; pi-claude-cli sets "claude".
+ * The "gpt" and "claude" statuses, the subscriptions' usage, are set here; pi-claude-cli also sets
+ * "claude" from each reply.
  */
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join, sep } from "node:path";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import type { ContextUsage, ExtensionAPI, ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent";
@@ -74,9 +76,46 @@ async function gptLimits(theme: Theme): Promise<string | undefined> {
 	}
 }
 
-function showGptLimits(ctx: ExtensionContext) {
+/** Claude Code's login: the macOS keychain item it writes, else its credentials file, as the CLI reads them. */
+async function claudeToken(): Promise<string> {
+	const dir = process.env.CLAUDE_CONFIG_DIR;
+	let json: string;
+	try {
+		// A custom config dir gets its own item, suffixed with the dir's hash.
+		const service = `Claude Code-credentials${dir ? `-${createHash("sha256").update(dir).digest("hex").slice(0, 8)}` : ""}`;
+		json = await new Promise((resolve, reject) =>
+			execFile("security", ["find-generic-password", "-s", service, "-a", userInfo().username, "-w"], (error, stdout) => (error ? reject(error) : resolve(stdout))),
+		);
+	} catch {
+		json = await readFile(join(dir ?? join(homedir(), ".claude"), ".credentials.json"), "utf8");
+	}
+	return JSON.parse(json).claudeAiOauth.accessToken;
+}
+
+// ponytail: an undocumented endpoint Claude Code itself calls; if it changes, the status just waits for a reply's.
+// The CLI refreshes the token; an expired one hides nothing, so the status pi-claude-cli set from a reply stays.
+async function claudeLimits(theme: Theme): Promise<string | undefined> {
+	try {
+		const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
+			headers: { Authorization: `Bearer ${await claudeToken()}`, "anthropic-beta": "oauth-2025-04-20" },
+			signal: AbortSignal.timeout(10_000),
+		});
+		if (!response.ok) return undefined;
+		const body = (await response.json()) as Record<string, { utilization: number; resets_at: string } | null>;
+		const windows = [["five_hour", "5h"], ["seven_day", "7d"]].flatMap(([key, label]) => {
+			const w = body[key];
+			return w ? [{ label, used: w.utilization / 100, resetsAt: Date.parse(w.resets_at) / 1000 }] : [];
+		});
+		return formatLimits("claude", windows, theme);
+	} catch {
+		return undefined;
+	}
+}
+
+function showLimits(ctx: ExtensionContext) {
 	// A session replaced while this was fetching leaves `ctx` stale, and its setStatus throws.
 	gptLimits(ctx.ui.theme).then((text) => ctx.ui.setStatus("gpt", text)).catch(() => {});
+	claudeLimits(ctx.ui.theme).then((text) => text && ctx.ui.setStatus("claude", text)).catch(() => {});
 }
 
 interface Stats {
@@ -170,11 +209,11 @@ function render(ctx: ExtensionContext, theme: Theme, footerData: ReadonlyFooterD
 export default function (pi: ExtensionAPI) {
 	// Each prompt's end also covers the subagents it ran, which use the same subscription.
 	pi.on("agent_end", (_event, ctx) => {
-		if (ctx.mode === "tui") showGptLimits(ctx);
+		if (ctx.mode === "tui") showLimits(ctx);
 	});
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
-		showGptLimits(ctx);
+		showLimits(ctx);
 		// pi removes this footer before the session (and so this ctx) is replaced, and the next session_start sets it again.
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			// Entries are append-only and every append moves the leaf, so the stats change only with it.

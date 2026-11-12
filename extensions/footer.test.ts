@@ -9,6 +9,8 @@ import footer from "./footer.ts";
 
 // No real Codex CLI login, so the footer never calls chatgpt.com from a test.
 process.env.CODEX_HOME = mkdtempSync(join(tmpdir(), "footer-codex-"));
+// Nor a Claude Code login: this dir's keychain item does not exist, nor its credentials file.
+process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), "footer-claude-"));
 
 const usage = (input: number, cacheRead: number, cost: number) => ({ input, output: 100, cacheRead, cacheWrite: 0, cost: { total: cost } });
 const assistant = (provider: string, model: string, u: object, extra: object = {}) => ({
@@ -91,4 +93,27 @@ test("the ChatGPT subscription's usage, read with Codex CLI's login, shows once 
 		globalThis.fetch = fetch;
 	}
 	assert.deepEqual(headers, { Authorization: "Bearer tok", "ChatGPT-Account-Id": "acct" });
+});
+
+test("the Claude subscription's usage, read with Claude Code's login, shows when the session starts", async () => {
+	const handlers: Record<string, any> = {};
+	footer({ on: (event: string, handler: any) => (handlers[event] = handler) } as any);
+	writeFileSync(join(process.env.CLAUDE_CONFIG_DIR!, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "ctok" } }));
+	const fetch = globalThis.fetch;
+	let headers: any;
+	globalThis.fetch = (async (url: string, init: any) => {
+		if (!url.includes("anthropic")) return new Response(null, { status: 401 });
+		headers = init.headers;
+		return Response.json({ five_hour: null, seven_day: { utilization: 17.0, resets_at: "2026-11-13T21:59:59.953944+00:00" } });
+	}) as any;
+	const status = new Promise((resolve) => {
+		const ctx = { mode: "tui", ui: { theme: { fg: (_color: string, text: string) => `<${text}>` }, setStatus: (key: string, text?: string) => key === "claude" && resolve(text), setFooter: () => {} } };
+		handlers.session_start({}, ctx);
+	});
+	try {
+		assert.equal(await status, "claude 7d 17%");
+	} finally {
+		globalThis.fetch = fetch;
+	}
+	assert.deepEqual(headers, { Authorization: "Bearer ctok", "anthropic-beta": "oauth-2025-04-20" });
 });
