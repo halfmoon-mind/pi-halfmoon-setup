@@ -9,11 +9,11 @@
 
 Use the same model router, subagents, and workflow prompts on every machine. `router/auto` classifies the first user message once and keeps the chosen tier for the whole session, so repeated model switches never break the prompt cache.
 
-![Diagram of a router that classifies the first request into Sonnet, Opus, or GPT, and of the scout, planner, worker, and reviewer roles](docs/images/overview.svg)
+![Diagram of a router that keeps the session on Opus and moves only very hard work up to Fable, and of the scout, planner, worker, and reviewer roles](docs/images/overview.svg)
 
 ## Features
 
-- **Per-session routing** — assigns different models to everyday work, complex design, and logic-heavy problems.
+- **Per-session routing** — keeps the main session on Opus, moves only very hard work up to Fable, and sets thinking to match.
 - **Role-based subagents** — explore, plan, implement, and review in isolated contexts.
 - **Workflow commands** — chain work with `/implement`, `/scout-and-plan`, and `/implement-and-review`.
 - **Stop-time review gate** — another model family reviews each prompt's changes before pi stops, and sends blocking issues back.
@@ -37,7 +37,7 @@ To use a local checkout instead, install it like this. After editing, run `/relo
 pi install ~/projects/pi-halfmoon-setup
 ```
 
-The `deep-high` tier, the `reviewer` and `plan-reviewer` agents, and the review gate use the `openai` provider, so set up its authentication too. With an environment variable:
+The `reviewer`, `plan-reviewer`, and `deep-worker` agents and the review gate use the `openai` provider, so set up its authentication too. With an environment variable:
 
 ```bash
 export OPENAI_API_KEY="<your-api-key>"
@@ -93,28 +93,28 @@ The prompts use the `subagent` tool's `chain` mode and pass each step's output t
 
 | Tier | Model setting | Used for |
 |---|---|---|
-| `standard` | `pi-claude-cli/claude-sonnet-*` | Everyday features, bug fixes, reviews, docs, questions |
+| `standard` | `pi-claude-cli/claude-opus-*` | Everyday features, bug fixes, reviews, docs, questions |
 | `complex` | `pi-claude-cli/claude-opus-*` | Complex design, cross-cutting refactors, hard debugging. **Default fallback** |
 | `deep` | `pi-claude-cli/claude-opus-*` | Logic-heavy work such as algorithms, backend internals, and math |
 | `complex-high` | `pi-claude-cli/claude-fable-*` | `complex` work rated `xhigh` |
-| `deep-high` | `openai/gpt-6-astra` | `deep` work rated `xhigh` |
+| `deep-high` | `pi-claude-cli/claude-fable-*` | `deep` work rated `xhigh` |
 
-Opus is the default, following oh-my-openagent's model ladder. Only work rated very hard (`xhigh`) moves up to a flagship: Fable for design and GPT-6 Astra for logic. The classifier never picks a `-high` tier directly, and an escalated session stays on that model.
+The main session runs only on Opus or Fable, never Sonnet or GPT. Opus is the default, and only work rated very hard (`xhigh`) moves up to Fable. GPT stays in subagents, where a different model family reviews or takes logic-heavy subtasks. The tier still labels the work in the footer and the dataset log. The classifier never picks a `-high` tier directly, and an escalated session stays on that model.
 
 A Claude `-*` setting picks the newest numbered version of that family in the registered model catalog. Dated snapshots are excluded, so the actual model version depends on pi's catalog.
 
 The classifier reads up to 16,000 characters of the first user message. When the chosen answer's probability is below `0.5` or the classifier is unreachable, the router uses `complex`. It also uses that tier while Laya is switched off with `/laya off`. This is a **fallback for failed classification**; it does not switch to another provider when the chosen model fails to authenticate or respond.
 
-The same classification also scores how hard the request is from 0 to 3, and the session runs at `low`, `medium`, `high`, or `xhigh` thinking to match; `xhigh` starts at 2.15, since Laya rarely scores above 2.5. If you pick a thinking level yourself in pi, yours is used for the rest of the session. When the classifier cannot answer, or Laya is off, your level is used from the start.
+The same classification also scores how hard the request is from 0 to 3, and the session runs at `low`, `medium`, `high`, or `xhigh` thinking to match; `xhigh` starts at 2.15, since Laya rarely scores above 2.5. A session escalated to Fable runs at `medium` instead, so `xhigh` only reaches a `standard` session. pi's level goes to the `claude` CLI's `--effort` level of the same name for every Claude model. If you pick a thinking level yourself in pi, yours is used for the rest of the session. When the classifier cannot answer, or Laya is off, your level is used from the start.
 
 ### Agents
 
 | Agent | Model setting | Role |
 |---|---|---|
-| `scout` | `pi-claude-cli/claude-haiku` | Reads the code and summarizes the relevant files and key context |
+| `scout` | `pi-claude-cli/claude-haiku:high` | Reads the code and summarizes the relevant files and key context |
 | `planner` | `pi-claude-cli/claude-opus:high` | Writes an implementation plan from the exploration and the requirements |
 | `plan-reviewer` | `openai/gpt-6-astra:xhigh` | Fixes blockers in the plan with a different model family before the worker runs it |
-| `worker` | `router/auto` | Classifies the assigned task and implements it |
+| `worker` | `pi-claude-cli/claude-opus:high` | Implements the assigned task |
 | `deep-worker` | `openai/gpt-6.1-sol:medium` | Delivers one logic-heavy goal that tests can settle, or replies `ESCALATE` (oh-my-openagent's deep-low lane) |
 | `reviewer` | `openai/gpt-6-astra:high` | Reviews code quality and security with a different model family |
 
@@ -171,7 +171,7 @@ The footer shows `laya starting`, `laya on`, `laya idle`, `laya unavailable`, or
 
 ### Dataset log
 
-Each newly routed session, subagents included, appends one JSON line to `~/.pi/agent/laya-dataset.jsonl` (it follows `PI_CODING_AGENT_DIR`): the prompt Laya saw (up to 16,000 characters), every tier's probability, the raw effort score, and the tier, model, and thinking level used. Sessions routed while Laya is off are logged without answers. `session` matches the pi session file, whose `thinking_level_change` and `model_change` entries show where you overrode the route. The file holds prompt text, so treat it like your session files.
+Each newly routed session appends one JSON line to `~/.pi/agent/laya-dataset.jsonl` (it follows `PI_CODING_AGENT_DIR`): the prompt Laya saw (up to 16,000 characters), every tier's probability, the raw effort score, and the tier, model, and thinking level used. Sessions routed while Laya is off are logged without answers. `session` matches the pi session file, whose `thinking_level_change` and `model_change` entries show where you overrode the route. The file holds prompt text, so treat it like your session files.
 
 ## Troubleshooting
 
@@ -181,7 +181,7 @@ Each newly routed session, subagents included, appends one JSON line to `~/.pi/a
 | You want to keep working without Laya | Run `/laya off`. New sessions route to Opus |
 | The `pi-claude-cli` provider fails to load | Check that `claude` is on your PATH and that `claude auth login` is done |
 | `is not in the model catalog` | Check that the chosen provider is loaded and check pi's model catalog |
-| Auth errors in the `deep-high` tier, a review step, or the review gate | Check the `openai` provider's authentication and your access to the model |
+| Auth errors in `deep-worker`, a review step, or the review gate | Check the `openai` provider's authentication and your access to the model |
 | A project agent is not picked up | Check that you pass `agentScope: "both"` or `"project"` |
 
 Claude requests run through `claude -p`, so Claude Code's user settings, hooks, and plugins can affect them. Its MCP servers and its built-in tools are left out, except web search and fetch; pi's own tools reach Claude through an MCP server, and one `claude` process keeps the conversation between turns. Keep credentials and per-machine UI settings in each machine's pi and Claude config, not in this repository.

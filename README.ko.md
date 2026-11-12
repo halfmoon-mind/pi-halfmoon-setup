@@ -9,11 +9,11 @@
 
 여러 머신에서 같은 모델 라우터, 서브에이전트, 워크플로 프롬프트를 사용할 수 있습니다. `router/auto`는 첫 사용자 메시지를 한 번 분류하고 세션 동안 선택한 티어를 유지해, 반복적인 모델 전환으로 프롬프트 캐시가 깨지는 일을 피합니다.
 
-![첫 요청을 Sonnet·Opus·GPT로 분류하는 라우터와 scout·planner·worker·reviewer의 역할을 설명하는 구성도](docs/images/overview.svg)
+![세션을 Opus로 유지하고 아주 어려운 작업만 Fable로 올리는 라우터와 scout·planner·worker·reviewer의 역할을 설명하는 구성도](docs/images/overview.svg)
 
 ## 주요 기능
 
-- **세션 단위 라우팅** — 일반 작업, 복잡한 설계, 논리 중심 문제에 서로 다른 모델을 배정합니다.
+- **세션 단위 라우팅** — 메인 세션은 Opus로 두고, 아주 어려운 작업만 Fable로 올리며, thinking 레벨도 난이도에 맞춥니다.
 - **역할별 서브에이전트** — 탐색·계획·구현·리뷰를 독립된 컨텍스트에서 수행합니다.
 - **워크플로 명령어** — `/implement`, `/scout-and-plan`, `/implement-and-review`로 작업을 연결합니다.
 - **종료 전 리뷰 게이트** — pi가 멈추기 전에 다른 모델 계열이 프롬프트의 변경을 리뷰하고, 막히는 문제는 다시 돌려보냅니다.
@@ -37,7 +37,7 @@ claude auth login
 pi install ~/projects/pi-halfmoon-setup
 ```
 
-`deep-high` 티어, `reviewer`·`plan-reviewer` 에이전트, 리뷰 게이트는 `openai` 프로바이더를 사용합니다. 해당 프로바이더의 인증도 준비해야 합니다. 환경변수로 설정하는 경우:
+`reviewer`·`plan-reviewer`·`deep-worker` 에이전트와 리뷰 게이트는 `openai` 프로바이더를 사용합니다. 해당 프로바이더의 인증도 준비해야 합니다. 환경변수로 설정하는 경우:
 
 ```bash
 export OPENAI_API_KEY="<your-api-key>"
@@ -93,28 +93,28 @@ pi 입력창에서 프롬프트 명령어 뒤에 작업을 적습니다.
 
 | 티어 | 모델 설정 | 대상 작업 |
 |---|---|---|
-| `standard` | `pi-claude-cli/claude-sonnet-*` | 일반 기능 개발, 버그 수정, 리뷰, 문서, 질문 |
+| `standard` | `pi-claude-cli/claude-opus-*` | 일반 기능 개발, 버그 수정, 리뷰, 문서, 질문 |
 | `complex` | `pi-claude-cli/claude-opus-*` | 복잡한 설계, 여러 영역의 리팩터링, 어려운 디버깅. **기본 폴백** |
 | `deep` | `pi-claude-cli/claude-opus-*` | 알고리즘, 백엔드 내부 구조, 수학 등 논리 중심 작업 |
 | `complex-high` | `pi-claude-cli/claude-fable-*` | 난이도가 `xhigh`인 `complex` 작업 |
-| `deep-high` | `openai/gpt-6-astra` | 난이도가 `xhigh`인 `deep` 작업 |
+| `deep-high` | `pi-claude-cli/claude-fable-*` | 난이도가 `xhigh`인 `deep` 작업 |
 
-oh-my-openagent의 모델 순서를 따라 Opus를 기본으로 씁니다. 매우 어렵다(`xhigh`)고 판단한 작업만 최상위 모델로 올라가며, 설계는 Fable, 논리는 GPT-6 Astra로 갑니다. 분류기가 `-high` 티어를 직접 고르지는 않으며, 올라간 세션은 끝까지 그 모델을 유지합니다.
+메인 세션은 Opus나 Fable에서만 돌고, Sonnet이나 GPT는 쓰지 않습니다. Opus가 기본이며, 매우 어렵다(`xhigh`)고 판단한 작업만 Fable로 올라갑니다. GPT는 다른 모델 계열로 리뷰하거나 논리 중심 하위 작업을 맡는 서브에이전트에만 씁니다. 티어는 푸터와 데이터셋 로그에서 작업 종류를 나타내는 데 계속 쓰입니다. 분류기가 `-high` 티어를 직접 고르지는 않으며, 올라간 세션은 끝까지 그 모델을 유지합니다.
 
 Claude의 `-*` 설정은 등록된 모델 카탈로그에서 해당 계열의 최신 숫자 버전을 선택합니다. 날짜가 붙은 스냅샷은 제외하므로, 실제 모델 버전은 pi의 카탈로그에 따라 달라집니다.
 
 분류기는 첫 사용자 메시지의 최대 16,000자를 사용합니다. 선택된 답의 확률이 `0.5` 미만이거나 분류기에 접근할 수 없으면 `complex`를 사용합니다. `/laya off` 상태에서도 같은 티어를 사용합니다. 이는 **분류 실패에 대한 폴백**이며, 선택된 모델의 인증·호출 실패 시 다른 프로바이더로 전환하는 기능은 아닙니다.
 
-같은 분류에서 요청의 난이도도 0~3점으로 함께 매겨, 세션의 thinking level을 `low`, `medium`, `high`, `xhigh` 중 하나로 정합니다. Laya가 2.5를 넘는 점수를 거의 주지 않아 `xhigh`는 2.15점부터입니다. pi에서 thinking level을 직접 바꾸면 그 세션의 나머지 동안은 사용자가 고른 값을 씁니다. 분류기가 답하지 못하거나 Laya가 꺼져 있으면 처음부터 사용자가 정한 값을 씁니다.
+같은 분류에서 요청의 난이도도 0~3점으로 함께 매겨, 세션의 thinking level을 `low`, `medium`, `high`, `xhigh` 중 하나로 정합니다. Laya가 2.5를 넘는 점수를 거의 주지 않아 `xhigh`는 2.15점부터입니다. Fable로 올라간 세션은 대신 `medium`으로 돌기 때문에, `xhigh`는 `standard` 세션에만 적용됩니다. pi의 레벨은 모든 Claude 모델에서 `claude` CLI의 같은 이름 `--effort` 레벨로 전달됩니다. pi에서 thinking level을 직접 바꾸면 그 세션의 나머지 동안은 사용자가 고른 값을 씁니다. 분류기가 답하지 못하거나 Laya가 꺼져 있으면 처음부터 사용자가 정한 값을 씁니다.
 
 ### 에이전트
 
 | 에이전트 | 모델 설정 | 역할 |
 |---|---|---|
-| `scout` | `pi-claude-cli/claude-haiku` | 코드를 읽고 관련 파일과 핵심 맥락을 정리 |
+| `scout` | `pi-claude-cli/claude-haiku:high` | 코드를 읽고 관련 파일과 핵심 맥락을 정리 |
 | `planner` | `pi-claude-cli/claude-opus:high` | 탐색 결과와 요구사항으로 구현 계획 작성 |
 | `plan-reviewer` | `openai/gpt-6-astra:xhigh` | worker가 실행하기 전에 다른 모델 계열로 계획의 막히는 문제를 고침 |
-| `worker` | `router/auto` | 할당된 작업을 분류해 구현 |
+| `worker` | `pi-claude-cli/claude-opus:high` | 할당된 작업을 구현 |
 | `deep-worker` | `openai/gpt-6.1-sol:medium` | 테스트로 확인할 수 있는 논리 중심 목표 하나를 구현하거나 `ESCALATE`로 답함 (oh-my-openagent의 deep-low 레인) |
 | `reviewer` | `openai/gpt-6-astra:high` | 다른 모델 계열로 코드 품질과 보안 리뷰 |
 
@@ -171,7 +171,7 @@ pi --model router/auto
 
 ### 데이터셋 로그
 
-새로 라우팅된 세션마다(서브에이전트 포함) `~/.pi/agent/laya-dataset.jsonl`에 JSON 한 줄이 추가됩니다(`PI_CODING_AGENT_DIR`을 따름). Laya가 본 프롬프트(최대 16,000자), 티어별 확률, 난이도 원점수, 실제 사용한 티어·모델·thinking 레벨이 기록됩니다. Laya가 꺼진 상태로 라우팅된 세션은 답 없이 기록됩니다. `session`은 pi 세션 파일과 같은 값이며, 그 파일의 `thinking_level_change`, `model_change` 항목으로 사용자가 라우팅을 바꾼 지점을 알 수 있습니다. 프롬프트 원문이 담기므로 세션 파일처럼 다루세요.
+새로 라우팅된 세션마다 `~/.pi/agent/laya-dataset.jsonl`에 JSON 한 줄이 추가됩니다(`PI_CODING_AGENT_DIR`을 따름). Laya가 본 프롬프트(최대 16,000자), 티어별 확률, 난이도 원점수, 실제 사용한 티어·모델·thinking 레벨이 기록됩니다. Laya가 꺼진 상태로 라우팅된 세션은 답 없이 기록됩니다. `session`은 pi 세션 파일과 같은 값이며, 그 파일의 `thinking_level_change`, `model_change` 항목으로 사용자가 라우팅을 바꾼 지점을 알 수 있습니다. 프롬프트 원문이 담기므로 세션 파일처럼 다루세요.
 
 ## 문제 해결
 
@@ -181,7 +181,7 @@ pi --model router/auto
 | Laya 없이 계속 사용하고 싶음 | `/laya off` 실행. 새 세션은 Opus로 라우팅 |
 | `pi-claude-cli` 프로바이더 로드 실패 | `claude`가 PATH에 있는지, `claude auth login`이 완료됐는지 확인 |
 | `is not in the model catalog` | 선택된 프로바이더의 로드 여부와 pi 모델 카탈로그 확인 |
-| `deep-high` 티어, 리뷰 단계, 리뷰 게이트의 인증 오류 | `openai` 프로바이더 인증 및 해당 모델 접근 권한 확인 |
+| `deep-worker`, 리뷰 단계, 리뷰 게이트의 인증 오류 | `openai` 프로바이더 인증 및 해당 모델 접근 권한 확인 |
 | 프로젝트 에이전트가 선택되지 않음 | `agentScope: "both"` 또는 `"project"` 사용 여부 확인 |
 
 Claude 요청은 `claude -p`를 통해 실행됩니다. 따라서 Claude Code의 사용자 설정, 훅, 플러그인이 요청에 영향을 줄 수 있습니다. Claude Code의 MCP 서버와 내장 도구는 웹 검색·가져오기 외에는 쓰지 않습니다. pi의 도구는 MCP 서버를 거쳐 Claude에 전달되고, `claude` 프로세스 하나가 턴 사이에도 대화를 유지합니다. 인증 정보와 머신별 UI 설정은 저장소가 아닌 각 머신의 pi·Claude 설정에서 관리하세요.
