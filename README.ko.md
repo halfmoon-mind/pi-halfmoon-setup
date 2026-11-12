@@ -118,7 +118,7 @@ Claude의 `-*` 설정은 등록된 모델 카탈로그에서 해당 계열의 �
 | `plan-reviewer` | `openai/gpt-6-astra:xhigh` | worker가 실행하기 전에 다른 모델 계열로 계획의 막히는 문제를 고침 |
 | `worker` | `pi-claude-cli/claude-opus:high` | 할당된 작업을 구현 |
 | `deep-worker` | `openai/gpt-6.1-sol:medium` | 테스트로 확인할 수 있는 논리 중심 목표 하나를 구현하거나 `ESCALATE`로 답함 (oh-my-openagent의 deep-low 레인) |
-| `reviewer` | `openai/gpt-6-astra:high` | 다른 모델 계열로 코드 품질과 보안 리뷰 |
+| `reviewer` | `openai/gpt-6.1-sol:high` | 다른 모델 계열로 코드 품질과 보안 리뷰 |
 
 에이전트의 Claude 모델명은 부분 이름이며 pi가 해석합니다. 역할과 모델은 [`agents/`](agents/)의 Markdown 파일에서 설정합니다. `subagent` 도구가 에이전트 목록과 `description`을 모델에 보여 주므로, 메인 모델이 논리 중심 하위 작업을 `deep-worker`에 맡기는 식으로 스스로 위임할 수 있습니다. 에이전트를 추가한 뒤에는 `/reload`를 실행하세요.
 

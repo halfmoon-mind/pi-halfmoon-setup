@@ -118,7 +118,7 @@ The same classification also scores how hard the request is from 0 to 3, and the
 | `plan-reviewer` | `openai/gpt-6-astra:xhigh` | Fixes blockers in the plan with a different model family before the worker runs it |
 | `worker` | `pi-claude-cli/claude-opus:high` | Implements the assigned task |
 | `deep-worker` | `openai/gpt-6.1-sol:medium` | Delivers one logic-heavy goal that tests can settle, or replies `ESCALATE` (oh-my-openagent's deep-low lane) |
-| `reviewer` | `openai/gpt-6-astra:high` | Reviews code quality and security with a different model family |
+| `reviewer` | `openai/gpt-6.1-sol:high` | Reviews code quality and security with a different model family |
 
 The agents' Claude model names are partial names that pi resolves. Set roles and models in the Markdown files in [`agents/`](agents/). The `subagent` tool lists the agents with their `description`, so the main model can delegate on its own, for example a logic-heavy subtask to `deep-worker`; run `/reload` after adding an agent.
 
