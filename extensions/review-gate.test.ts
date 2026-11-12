@@ -30,9 +30,12 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	);
 
 	const handlers: Record<string, any> = {};
-	reviewGate({ on: (event: string, handler: any) => (handlers[event] = handler), registerCommand() {} } as any);
+	const commands: Record<string, any> = {};
+	reviewGate({ on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: (name: string, def: any) => (commands[name] = def) } as any);
 	const notices: string[] = [];
-	const ctx = { mode: "tui", cwd: repo, ui: { setStatus() {}, notify: (msg: string) => notices.push(msg) } };
+	const statuses: Record<string, string | undefined> = {};
+	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), notify: (msg: string) => notices.push(msg) };
+	const ctx = { mode: "tui", cwd: repo, ui };
 	const assistant = { role: "assistant", content: [{ type: "text", text: "Bumped a.txt to 2." }] };
 	const settle = (mode = "tui") => handlers.agent_before_settle({ entries: [], outcome: "completed", context: { llmMessages: [assistant] } }, { ...ctx, mode });
 	const reviewCount = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n---\n").length - 1 : 0);
@@ -54,5 +57,16 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	writeFileSync(verdict, "ALLOW: fixed");
 	assert.equal(await settle(), undefined);
 	assert.deepEqual(notices, ["review: fixed"]);
+	assert.equal(reviewCount(), 2);
+
+	// Off is the state that shows, in the footer of every pi it applies to.
+	await commands["review-gate"].handler("off", ctx);
+	assert.equal(statuses.review, "review off");
+	writeFileSync(join(repo, "a.txt"), "4\n");
+	assert.equal(await settle(), undefined, "off reviews nothing");
+	handlers.session_start({}, ctx);
+	assert.equal(statuses.review, "review off");
+	await commands["review-gate"].handler("on", ctx);
+	assert.equal(statuses.review, undefined);
 	assert.equal(reviewCount(), 2);
 });

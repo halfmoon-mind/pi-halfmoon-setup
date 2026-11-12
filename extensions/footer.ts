@@ -77,7 +77,7 @@ async function gptLimits(theme: Theme): Promise<string | undefined> {
 }
 
 /** Claude Code's login: the macOS keychain item it writes, else its credentials file, as the CLI reads them. */
-async function claudeToken(): Promise<string> {
+export async function claudeToken(): Promise<string> {
 	const dir = process.env.CLAUDE_CONFIG_DIR;
 	let json: string;
 	try {
@@ -92,19 +92,28 @@ async function claudeToken(): Promise<string> {
 	return JSON.parse(json).claudeAiOauth.accessToken;
 }
 
-// ponytail: an undocumented endpoint Claude Code itself calls; if it changes, the status just waits for a reply's.
+// The usage rides on every reply's headers, so this asks Haiku for one token (about 9, counted on the
+// subscription): Claude Code's /api/oauth/usage answers once per ~5.5 minutes per account and 429s between.
+// ponytail: OAuth tokens on /v1/messages work today; if Anthropic stops that, the status waits for a reply's.
 // The CLI refreshes the token; an expired one hides nothing, so the status pi-claude-cli set from a reply stays.
 async function claudeLimits(theme: Theme): Promise<string | undefined> {
 	try {
-		const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
-			headers: { Authorization: `Bearer ${await claudeToken()}`, "anthropic-beta": "oauth-2025-04-20" },
+		const response = await fetch("https://api.anthropic.com/v1/messages", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${await claudeToken()}`,
+				"anthropic-beta": "oauth-2025-04-20",
+				"anthropic-version": "2023-06-01",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ model: "claude-haiku-4-5", max_tokens: 1, messages: [{ role: "user", content: "hi" }] }),
 			signal: AbortSignal.timeout(10_000),
 		});
 		if (!response.ok) return undefined;
-		const body = (await response.json()) as Record<string, { utilization: number; resets_at: string } | null>;
-		const windows = [["five_hour", "5h"], ["seven_day", "7d"]].flatMap(([key, label]) => {
-			const w = body[key];
-			return w ? [{ label, used: w.utilization / 100, resetsAt: Date.parse(w.resets_at) / 1000 }] : [];
+		const header = (name: string) => response.headers.get(`anthropic-ratelimit-unified-${name}`);
+		const windows = ["5h", "7d"].flatMap((label) => {
+			const used = header(`${label}-utilization`);
+			return used === null ? [] : [{ label, used: Number(used), resetsAt: Number(header(`${label}-reset`)) }];
 		});
 		return formatLimits("claude", windows, theme);
 	} catch {
@@ -112,10 +121,12 @@ async function claudeLimits(theme: Theme): Promise<string | undefined> {
 	}
 }
 
-function showLimits(ctx: ExtensionContext) {
+// Usage that cannot be read shows as `?`, so a failed fetch (seen: a 429) is not mistaken for no subscription.
+// Claude's `?` only at session start: later, the status pi-claude-cli set from a reply is newer than a failed fetch.
+function showLimits(ctx: ExtensionContext, starting = false) {
 	// A session replaced while this was fetching leaves `ctx` stale, and its setStatus throws.
-	gptLimits(ctx.ui.theme).then((text) => ctx.ui.setStatus("gpt", text)).catch(() => {});
-	claudeLimits(ctx.ui.theme).then((text) => text && ctx.ui.setStatus("claude", text)).catch(() => {});
+	gptLimits(ctx.ui.theme).then((text) => ctx.ui.setStatus("gpt", text ?? "gpt ?")).catch(() => {});
+	claudeLimits(ctx.ui.theme).then((text) => (text || starting) && ctx.ui.setStatus("claude", text ?? "claude ?")).catch(() => {});
 }
 
 interface Stats {
@@ -196,10 +207,12 @@ function render(ctx: ExtensionContext, theme: Theme, footerData: ReadonlyFooterD
 	const model = ctx.model;
 	const virtual = model?.api === "pi-virtual";
 	const tier = virtual ? statuses.get("router") : undefined;
-	const head = tier ?? model?.id ?? "no-model";
+	// Before the first route, the model and its thinking level are still to be picked.
+	const pending = virtual && !tier && !latest;
+	const head = tier ?? (pending ? `${model?.id} (picks on first message)` : (model?.id ?? "no-model"));
 	let tail = virtual && latest ? ` → ${latest.model}` : "";
 	const level = (virtual && latest?.thinkingLevel) || ctx.thinkingLevel;
-	if (model?.reasoning && level) tail += ` • ${level === "off" ? "thinking off" : level}`;
+	if (model?.reasoning && level && !pending) tail += ` • ${level === "off" ? "thinking off" : level}`;
 	// router.ts marks a tier taken by default with `?`.
 	const right = theme.fg(!tier ? "dim" : tier.includes("?") ? "warning" : "accent", head) + theme.fg("dim", tail);
 
@@ -213,7 +226,7 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
-		showLimits(ctx);
+		showLimits(ctx, true);
 		// pi removes this footer before the session (and so this ctx) is replaced, and the next session_start sets it again.
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			// Entries are append-only and every append moves the leaf, so the stats change only with it.

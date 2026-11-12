@@ -39,6 +39,7 @@ function setup(answer: unknown | "missing", catalog = CATALOG, env: Record<strin
 		mode: "tui",
 		sessionManager: { getSessionId: () => "session-1" },
 		ui: {
+			theme: { fg: (_color: string, text: string) => text },
 			notify: (msg: string) => notices.push(msg),
 			setStatus: (key: string, text?: string) => {
 				statuses[key] = text;

@@ -218,7 +218,8 @@ export default function (pi: ExtensionAPI) {
 		else if (await healthy()) text = undefined;
 		else if (child) text = "laya starting";
 		else if (cannotStart) text = "laya unavailable";
-		ui?.setStatus("laya", text);
+		// Off or unavailable means every session takes FALLBACK_TIER unclassified, so it stands out.
+		ui?.setStatus("laya", text && text !== "laya starting" ? ui.theme.fg("warning", text) : text);
 	}
 
 	function stopLaya() {

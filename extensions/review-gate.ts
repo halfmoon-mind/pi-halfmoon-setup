@@ -9,7 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "./subagent/agents.ts";
 import { getResultOutput, isFailedResult, runSingleAgent } from "./subagent/index.ts";
 
@@ -39,6 +39,12 @@ export default function (pi: ExtensionAPI) {
 			return false;
 		}
 	};
+
+	// The switch applies to every pi, so a gate left off stays in sight; on is the normal case and shows nothing.
+	const showSwitch = (ctx: ExtensionContext) => ctx.ui.setStatus("review", off() ? ctx.ui.theme.fg("warning", "review off") : undefined);
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx.mode === "tui") showSwitch(ctx);
+	});
 
 	let base: string | undefined; // HEAD when the prompt started
 	let seen: string | undefined; // the repository at the prompt's start, then at the latest review
@@ -100,6 +106,7 @@ export default function (pi: ExtensionAPI) {
 				mkdirSync(dirname(switchPath), { recursive: true });
 				writeFileSync(switchPath, `${JSON.stringify({ enabled: arg === "on" })}\n`);
 			}
+			showSwitch(ctx);
 			ctx.ui.notify(off() ? "review gate off" : "review gate on: the reviewer agent checks each prompt's changes before pi stops", "info");
 		},
 	});

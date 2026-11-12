@@ -68,6 +68,8 @@ pi --model router/auto
 
 You can also pick `router/auto` with `/model` while pi is running. If you use Laya, check its state with `/laya`.
 
+At startup, pi warns about anything this package needs that the machine lacks (the `claude` CLI or its login, `openai` credentials, poppler), and a line above the editor lists the workflow commands until the first prompt. To hide pi's list of loaded skills and extensions, set `"quietStartup": "header"` in `~/.pi/agent/settings.json` on each machine.
+
 ## Usage
 
 In pi's input box, type a prompt command followed by the task.
@@ -124,7 +126,7 @@ The default `agentScope: "user"` loads the package's agents and `~/.pi/agent/age
 
 ### Review gate
 
-Like the Codex plugin's stop-time review in Claude Code: when a prompt's run changed the repository, the `reviewer` agent reviews those changes before pi stops. Its first line is `ALLOW` or `BLOCK`, and a `BLOCK` goes back to the model as a message to fix the issue or explain why it is not one. Each prompt gets at most three reviews, a failed or timed-out review never blocks, and only interactive sessions are gated, so subagents never review themselves. While a review runs, the footer shows `reviewing…`; Esc cannot stop it, but it times out after 10 minutes.
+Like the Codex plugin's stop-time review in Claude Code: when a prompt's run changed the repository, the `reviewer` agent reviews those changes before pi stops. Its first line is `ALLOW` or `BLOCK`, and a `BLOCK` goes back to the model as a message to fix the issue or explain why it is not one. Each prompt gets at most three reviews, a failed or timed-out review never blocks, and only interactive sessions are gated, so subagents never review themselves. While the gate is off, the footer shows `review off`. While a review runs, it shows `reviewing…`; Esc cannot stop it, but it times out after 10 minutes.
 
 | pi command | Action |
 |---|---|

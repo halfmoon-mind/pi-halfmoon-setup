@@ -104,7 +104,8 @@ test("the Claude subscription's usage, read with Claude Code's login, shows when
 	globalThis.fetch = (async (url: string, init: any) => {
 		if (!url.includes("anthropic")) return new Response(null, { status: 401 });
 		headers = init.headers;
-		return Response.json({ five_hour: null, seven_day: { utilization: 17.0, resets_at: "2026-11-13T21:59:59.953944+00:00" } });
+		// Seen: no 5h window while it is unused.
+		return Response.json({}, { headers: { "anthropic-ratelimit-unified-7d-utilization": "0.17", "anthropic-ratelimit-unified-7d-reset": "1794607200" } });
 	}) as any;
 	const status = new Promise((resolve) => {
 		const ctx = { mode: "tui", ui: { theme: { fg: (_color: string, text: string) => `<${text}>` }, setStatus: (key: string, text?: string) => key === "claude" && resolve(text), setFooter: () => {} } };
@@ -115,5 +116,29 @@ test("the Claude subscription's usage, read with Claude Code's login, shows when
 	} finally {
 		globalThis.fetch = fetch;
 	}
-	assert.deepEqual(headers, { Authorization: "Bearer ctok", "anthropic-beta": "oauth-2025-04-20" });
+	assert.equal(headers.Authorization, "Bearer ctok");
+});
+
+test("before router/auto's first route, the footer says the model is still to be picked, without a thinking level", () => {
+	const lines = renderFooter({ id: "auto", api: "pi-virtual", reasoning: true }, [], {});
+	assert.equal(lines[1], "━━━━━━━━── 80%/100k (auto) | auto (picks on first message)");
+});
+
+test("usage that cannot be read shows as `?` when the session starts", async () => {
+	const handlers: Record<string, any> = {};
+	footer({ on: (event: string, handler: any) => (handlers[event] = handler) } as any);
+	writeFileSync(join(process.env.CODEX_HOME!, "auth.json"), JSON.stringify({ tokens: { access_token: "tok", account_id: "acct" } }));
+	writeFileSync(join(process.env.CLAUDE_CONFIG_DIR!, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "ctok" } }));
+	const fetch = globalThis.fetch;
+	globalThis.fetch = (async () => new Response(null, { status: 429 })) as any;
+	const statuses: Record<string, string> = {};
+	try {
+		await new Promise<void>((resolve) => {
+			const setStatus = (key: string, text: string) => (statuses[key] = text) && Object.keys(statuses).length === 2 && resolve();
+			handlers.session_start({}, { mode: "tui", ui: { theme: { fg: (_c: string, t: string) => t }, setStatus, setFooter: () => {} } });
+		});
+	} finally {
+		globalThis.fetch = fetch;
+	}
+	assert.deepEqual(statuses, { gpt: "gpt ?", claude: "claude ?" });
 });
