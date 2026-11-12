@@ -29,19 +29,18 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
 
-// Tier -> physical model, on oh-my-openagent's ladder: Opus is the default, and only work Laya rates xhigh
-// climbs to a flagship, Fable for design (omo's Daily Heavy lane) and GPT-6 Astra for logic (its deep-high
-// lane). GPT-6.1 Sol, omo's default deep model, is left out until it earns trust here.
+// Tier -> physical model. The main session runs only on Opus or Fable, never Sonnet or GPT: Opus is the
+// default, and only work Laya rates xhigh climbs to Fable. GPT stays in subagents (deep-worker, reviewers).
 // Claude goes through pi-claude-cli (the logged-in `claude` CLI) so it draws on subscription limits, not extra usage.
 // An id ending in `-*` means the newest version of that family the provider lists (see resolveModel).
-// ponytail: an escalated session stays on Fable for good; point complex-high at Opus if Fable's allowance runs short.
+// ponytail: an escalated session stays on Fable for good; point the -high tiers at Opus if Fable's allowance runs short.
 const TIERS = {
-	standard: { provider: "pi-claude-cli", id: "claude-sonnet-*", criteria: "Ordinary features, fixes, reviews, docs, or questions" },
+	standard: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Ordinary features, fixes, reviews, docs, or questions" },
 	complex: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Subtle design, cross-cutting refactors, or hard debugging", xhigh: "complex-high" },
 	deep: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Logic-heavy algorithms, backend internals, or math with a clear goal", xhigh: "deep-high" },
 	// Not offered to Laya: reached only through a tier's `xhigh`.
 	"complex-high": { provider: "pi-claude-cli", id: "claude-fable-*" },
-	"deep-high": { provider: "openai", id: "gpt-6-astra" },
+	"deep-high": { provider: "pi-claude-cli", id: "claude-fable-*" },
 } as const;
 type Tier = keyof typeof TIERS;
 const FALLBACK_TIER: Tier = "complex";
@@ -337,8 +336,8 @@ export default function (pi: ExtensionAPI) {
 		id: "auto",
 		name: "Auto (classified once)",
 		thinkingLevels: ["low", "medium", "high", "xhigh"],
-		// Smallest window among the tiers; Pi uses the routed model's real limits after the first response.
-		contextWindow: 272_000,
+		// Every tier is a Claude model with a 1M window in pi's catalog; Pi uses the routed model's real limits after the first response.
+		contextWindow: 1_000_000,
 		maxTokens: 128_000,
 		async route(request, ctx) {
 			// Direct requests (compaction summaries) carry no state; keep them on the session's model.

@@ -103,17 +103,18 @@ test("Laya's effort score sets the thinking level until the user picks another o
 	assert.equal((await setup(choice("deep", 0.9)).route()).thinkingLevel, "medium");
 });
 
-test("only work rated xhigh leaves Opus or Sonnet: design climbs to Fable, logic to GPT-6 Astra, for the whole session", async () => {
+test("the main session never runs on Sonnet or GPT: Opus by default, and only work rated xhigh climbs to Fable, for the whole session", async () => {
 	const score = (score: number) => ({ type: "score", score, confidence: 0.25 });
 	const route = (tier: string, effort: number) => setup(choice(tier, 0.9), CATALOG, {}, score(effort)).route();
 	const s = setup(choice("deep", 0.9), CATALOG, {}, score(2.2));
 	const first = await s.route();
-	assert.deepEqual([first.model.id, first.thinkingLevel, s.statuses.router], ["gpt-6-astra", "xhigh", "deep-high 90%"]);
+	assert.deepEqual([first.model.id, first.thinkingLevel, s.statuses.router], ["claude-fable-5-1", "xhigh", "deep-high 90%"]);
 	// The user's own thinking level keeps the escalated model.
-	assert.equal((await s.route(first.state, { thinkingLevel: "low" })).model.id, "gpt-6-astra");
+	assert.equal((await s.route(first.state, { thinkingLevel: "low" })).model.id, "claude-fable-5-1");
 	assert.equal((await route("complex", 2.2)).model.id, "claude-fable-5-1");
 	assert.equal((await route("deep", 2.1)).model.id, "claude-opus-5-5");
-	assert.equal((await route("standard", 2.2)).model.id, "claude-sonnet-5-5");
+	assert.equal((await route("standard", 0.2)).model.id, "claude-opus-5-5");
+	assert.equal((await route("standard", 2.2)).model.id, "claude-opus-5-5");
 });
 
 test("each newly routed session logs one dataset line with the prompt and Laya's raw answers", async () => {
@@ -163,7 +164,7 @@ test("a classification cancelled by the user stores no tier", async () => {
 	assert.equal(s.statuses.router, undefined);
 });
 
-test("the complex and standard tiers follow the newest Opus and Sonnet the provider lists", async () => {
+test("the Opus tiers follow the newest Opus the provider lists", async () => {
 	const catalog = [
 		...CATALOG,
 		{ provider: "pi-claude-cli", id: "claude-opus-6" },
@@ -173,7 +174,7 @@ test("the complex and standard tiers follow the newest Opus and Sonnet the provi
 	];
 	const routed = await setup(choice("complex", 0.9), catalog).route();
 	assert.deepEqual([routed.model.provider, routed.model.id], ["pi-claude-cli", "claude-opus-6"]);
-	assert.equal((await setup(choice("standard", 0.9), catalog).route()).model.id, "claude-sonnet-6");
+	assert.equal((await setup(choice("standard", 0.9), catalog).route()).model.id, "claude-opus-6");
 });
 
 test("without laya-serve installed, router/auto still answers and explains the fix once", async () => {
@@ -195,7 +196,7 @@ test("/laya off routes to the newest Opus without classifying or warning; /laya 
 	assert.equal(s.calls(), 0);
 	assert.deepEqual(s.notices, ["laya off: router/auto uses pi-claude-cli/claude-opus-5-5 without classifying"]);
 	await s.laya("on");
-	assert.equal((await s.route()).model.id, "claude-sonnet-5-5");
+	assert.equal((await s.route()).state.tier, "standard");
 	assert.equal(s.calls(), 1);
 });
 
