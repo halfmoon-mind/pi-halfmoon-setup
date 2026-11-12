@@ -68,12 +68,14 @@ export default function (pi: ExtensionAPI) {
 
 		ctx.ui.setStatus("review", "reviewing…");
 		let output = "";
+		let failure = "";
 		try {
 			const agents = discoverAgents(ctx.cwd, "user").agents;
 			const result = await runSingleAgent(ctx.cwd, {}, agents, "reviewer", task, undefined, undefined, AbortSignal.timeout(REVIEW_TIMEOUT_MS), undefined, (results) => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results }));
-			if (!isFailedResult(result)) output = getResultOutput(result).trim();
-		} catch {
-			// timed out; reported below like any other missing verdict
+			if (isFailedResult(result)) failure = `exit ${result.exitCode}, ${result.stopReason ?? "no stop reason"}: ${getResultOutput(result).trim()}`;
+			else output = getResultOutput(result).trim();
+		} catch (err) {
+			failure = err instanceof Error ? err.message : String(err); // the timeout lands here
 		} finally {
 			ctx.ui.setStatus("review", undefined);
 		}
@@ -85,7 +87,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		// A failed review never blocks: looping the model on a reviewer outage helps no one.
 		if (verdict.startsWith("ALLOW:")) ctx.ui.notify(`review: ${verdict.slice(6).trim()}`, "info");
-		else ctx.ui.notify(`review gate: the reviewer gave no verdict, so this turn went unreviewed (first line: ${verdict ? JSON.stringify(verdict.slice(0, 200)) : "none, the review failed or timed out"})`, "warning");
+		else ctx.ui.notify(`review gate: the reviewer gave no verdict, so this turn went unreviewed (first line: ${verdict ? JSON.stringify(verdict.slice(0, 200)) : `none, the review failed: ${(failure || "no error given").slice(0, 300)}`})`, "warning");
 	});
 
 	pi.registerCommand("review-gate", {
