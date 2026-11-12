@@ -38,9 +38,9 @@ const TIERS = {
 	standard: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Ordinary features, fixes, reviews, docs, or questions" },
 	complex: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Subtle design, cross-cutting refactors, or hard debugging", xhigh: "complex-high" },
 	deep: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Logic-heavy algorithms, backend internals, or math with a clear goal", xhigh: "deep-high" },
-	// Not offered to Laya: reached only through a tier's `xhigh`.
-	"complex-high": { provider: "pi-claude-cli", id: "claude-fable-*" },
-	"deep-high": { provider: "pi-claude-cli", id: "claude-fable-*" },
+	// Not offered to Laya: reached only through a tier's `xhigh`, and run at medium thinking.
+	"complex-high": { provider: "pi-claude-cli", id: "claude-fable-*", thinking: "medium" },
+	"deep-high": { provider: "pi-claude-cli", id: "claude-fable-*", thinking: "medium" },
 } as const;
 type Tier = keyof typeof TIERS;
 const FALLBACK_TIER: Tier = "complex";
@@ -49,8 +49,8 @@ const FALLBACK_TIER: Tier = "complex";
 // reaches picks the thinking level. Its scores bunch below 2.5 (hardest seen: 2.43), so xhigh starts at
 // 2.15, the best cut on 24 labelled prompts (19 right, against 15 with plain rounding).
 // ponytail: cut fitted to a small sample, and short how-to questions still rate high (seen: 1.61);
-// refit from logged scores if xhigh escalates too often. Past the escalation xhigh changes little:
-// pi-claude-cli sends Opus high and xhigh both as max, and any other Claude's xhigh as high.
+// refit from logged scores if xhigh escalates too often. xhigh itself only reaches a standard session,
+// since the other tiers escalate to Fable at medium.
 const EFFORTS = [
 	{ level: "low", from: 0, criteria: "Trivial: a typo, a rename, a one-line change, or explaining a command or concept" },
 	{ level: "medium", from: 0.5, criteria: "Routine: an ordinary feature, fix, test, or review with a clear path" },
@@ -121,8 +121,9 @@ async function classifyRequest(request: ModelRouteRequest<RouterState>, ctx: Ext
 		const effort = score?.type === "score" ? EFFORTS.findLast((e) => score.score >= e.from)?.level : undefined;
 		const t = TIERS[chosen];
 		const tier = effort === "xhigh" && "xhigh" in t ? t.xhigh : chosen;
+		const routed = TIERS[tier];
 		const raw = { probability, probabilities: answer.probabilities, score: score?.type === "score" ? score.score : undefined };
-		return effort ? { tier, ...raw, effort, userLevel: request.thinkingLevel } : { tier, ...raw };
+		return effort ? { tier, ...raw, effort: "thinking" in routed ? routed.thinking : effort, userLevel: request.thinkingLevel } : { tier, ...raw };
 	} catch {
 		return undefined;
 	}

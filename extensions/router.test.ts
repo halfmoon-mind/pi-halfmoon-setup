@@ -108,13 +108,15 @@ test("the main session never runs on Sonnet or GPT: Opus by default, and only wo
 	const route = (tier: string, effort: number) => setup(choice(tier, 0.9), CATALOG, {}, score(effort)).route();
 	const s = setup(choice("deep", 0.9), CATALOG, {}, score(2.2));
 	const first = await s.route();
-	assert.deepEqual([first.model.id, first.thinkingLevel, s.statuses.router], ["claude-fable-5-1", "xhigh", "deep-high 90%"]);
+	assert.deepEqual([first.model.id, first.thinkingLevel, s.statuses.router], ["claude-fable-5-1", "medium", "deep-high 90%"]);
 	// The user's own thinking level keeps the escalated model.
-	assert.equal((await s.route(first.state, { thinkingLevel: "low" })).model.id, "claude-fable-5-1");
+	const picked = await s.route(first.state, { thinkingLevel: "low" });
+	assert.deepEqual([picked.model.id, picked.thinkingLevel], ["claude-fable-5-1", "low"]);
 	assert.equal((await route("complex", 2.2)).model.id, "claude-fable-5-1");
 	assert.equal((await route("deep", 2.1)).model.id, "claude-opus-5-5");
 	assert.equal((await route("standard", 0.2)).model.id, "claude-opus-5-5");
-	assert.equal((await route("standard", 2.2)).model.id, "claude-opus-5-5");
+	const standard = await route("standard", 2.2);
+	assert.deepEqual([standard.model.id, standard.thinkingLevel], ["claude-opus-5-5", "xhigh"]);
 });
 
 test("each newly routed session logs one dataset line with the prompt and Laya's raw answers", async () => {
