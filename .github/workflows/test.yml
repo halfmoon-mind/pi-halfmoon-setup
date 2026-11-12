@@ -22,4 +22,6 @@ jobs:
           version=$(npm view @earendil-works/pi-coding-agent version)
           npm install --prefix ~/.pi/agent/install/releases/$version @earendil-works/pi-coding-agent@$version
           echo $version > ~/.pi/agent/install/current-version
+      # pdf-read.ts reads PDFs through poppler.
+      - run: brew install poppler
       - run: npm test
