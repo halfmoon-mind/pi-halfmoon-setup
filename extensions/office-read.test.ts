@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { crc32, deflateRawSync } from "node:zlib";
-import { chartTable } from "./office-read.ts";
+import { chartTable, shown, unzip } from "./office-read.ts";
 import pdfRead from "./pdf-read.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "office-read-"));
@@ -122,7 +122,25 @@ test("a workbook comes as a grid per sheet: values as formatted, each formula af
 	assert.match(texts(await read({ path: "diagonal.xlsx", offset: 6 })), /^\| 1 \| 0 \|  \|[^]*\[Showing lines 6-6 of 16389\. Use offset=7 to continue\.\]$/);
 });
 
-test("a scatter chart's series keep their own X values", () => {
+test("cell formats: a month alone is a date, m next to h is minutes", () => {
+	assert.equal(shown("46197", "mmmm"), "2026-06-24");
+	assert.equal(shown("46197", "mmm-yy"), "2026-06-24");
+	assert.equal(shown("0.5", "h:mm"), "12:00:00");
+});
+
+test("each zip part and the whole read stop at their expansion caps", () => {
+	const zip = unzip(writeZip("big.docx", { a: "a".repeat(2000), b: "b".repeat(2000) }), 1000);
+	assert.throws(() => zip.get("a")!(), /^Error: a in .*big\.docx expands past 1000B: not read$/);
+	const two = unzip(join(dir, "big.docx"), 4000, 3000);
+	assert.equal(two.get("a")!().length, 2000);
+	assert.throws(() => two.get("b")!(), /big\.docx expands past 2\.9KB: not read$/);
+});
+
+test("chart rows: a sparse point index makes one row, and a scatter chart's series keep their own X values", () => {
+	assert.equal(
+		chartTable(`<c:chart><c:plotArea><c:barChart><c:ser><c:tx><c:v>A</c:v></c:tx><c:val><c:numRef><c:numCache><c:pt idx="100000000"><c:v>5</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser></c:barChart></c:plotArea></c:chart>`),
+		"Chart (barChart):\n| Category | A |\n|---|---|\n| 100000001 | 5 |",
+	);
 	const pts = (vs: number[]) => vs.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join("");
 	const ser = (name: string, xs: number[], ys: number[]) =>
 		`<c:ser><c:tx><c:v>${name}</c:v></c:tx><c:xVal><c:numRef><c:numCache>${pts(xs)}</c:numCache></c:numRef></c:xVal><c:yVal><c:numRef><c:numCache>${pts(ys)}</c:numCache></c:numRef></c:yVal></c:ser>`;
@@ -162,7 +180,7 @@ test("slides come as text with chart data, tables and notes, paged by slide; a s
 	writeZip("deck.pptx", {
 		"ppt/presentation.xml": `<p:presentation><p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/><p:sldId id="258" r:id="rId3"/></p:sldIdLst></p:presentation>`,
 		"ppt/_rels/presentation.xml.rels": rels({ rId1: "slides/slide1.xml", rId2: "slides/slide2.xml", rId3: "slides/slide3.xml" }),
-		"ppt/slides/slide1.xml": slide(sp("Q3 Review", `<p:ph type="ctrTitle"/>`) + sp("Prepared by Strategy")),
+		"ppt/slides/slide1.xml": slide(sp("Q3 Review", `<p:ph type="ctrTitle"/>`) + sp("Prepared by Strategy").replace("<a:t>", `<a:t xml:space="preserve">`)),
 		"ppt/slides/_rels/slide1.xml.rels": rels({ rId1: "../notesSlides/notesSlide1.xml" }),
 		"ppt/notesSlides/notesSlide1.xml": slide(sp("1", `<p:ph type="sldNum"/>`) + sp("Busan opened with 23 staff.", `<p:ph type="body" idx="1"/>`)),
 		"ppt/slides/slide2.xml": slide(

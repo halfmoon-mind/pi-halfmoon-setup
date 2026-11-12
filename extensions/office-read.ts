@@ -33,8 +33,9 @@ export function run(cmd: string, args: string[], signal?: AbortSignal): Promise<
 	);
 }
 
-/** The files in a zip (Office files are zips), each inflated when read. */
-export function unzip(file: string): Map<string, () => Buffer> {
+/** The files in a zip (Office files are zips), each inflated when read. A few KB can inflate to gigabytes, so each part
+ * and the whole read have a cap, far above any real file. */
+export function unzip(file: string, partCap = 1 << 28, totalCap = 1 << 30): Map<string, () => Buffer> {
 	const zip = readFileSync(file);
 	const end = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 5, 6]));
 	if (end < 0) throw new Error(`${file} is not a zip: the Office file may be password-protected or in the old binary format`);
@@ -46,13 +47,19 @@ export function unzip(file: string): Map<string, () => Buffer> {
 		const size = zip.readUInt32LE(at + 20);
 		const nameEnd = at + 46 + zip.readUInt16LE(at + 28);
 		const local = zip.readUInt32LE(at + 42);
-		files.set(zip.toString("utf8", at + 46, nameEnd), () => {
+		const name = zip.toString("utf8", at + 46, nameEnd);
+		files.set(name, () => {
 			const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
 			const data = zip.subarray(start, start + size);
-			// A few KB can inflate to gigabytes: cap each part and the whole read, far above any real file.
-			const out = method === 8 ? inflateRawSync(data, { maxOutputLength: 1 << 28 }) : data;
+			let out: Buffer;
+			try {
+				out = method === 8 ? inflateRawSync(data, { maxOutputLength: partCap }) : data;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ERR_BUFFER_TOO_LARGE") throw error;
+				throw new Error(`${name} in ${file} expands past ${formatSize(partCap)}: not read`);
+			}
 			expanded += out.length;
-			if (expanded > 1 << 30) throw new Error(`${file} expands past 1 GB: not read`);
+			if (expanded > totalCap) throw new Error(`${file} expands past ${formatSize(totalCap)}: not read`);
 			return out;
 		});
 		at = nameEnd + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
@@ -176,9 +183,10 @@ export function shown(value: string, format: string, date1904 = false): string {
 		return (n < 0 ? "-" : "") + parts.join(":");
 	}
 	const when = new Date(Math.round((n - (date1904 ? 24107 : 25569)) * 86400000));
-	if (/[dyhs]/i.test(code) && !Number.isNaN(when.getTime())) {
+	// m alone is a month (mmm, mmmm); next to h or s it is minutes. A date goes as the whole ISO date, more exact than a month name.
+	if (/[dymhs]/i.test(code) && !Number.isNaN(when.getTime())) {
 		const iso = when.toISOString();
-		const date = /[dy]/i.test(code) ? iso.slice(0, 10) : "";
+		const date = /[dy]/i.test(code) || !/[hs]/i.test(code) ? iso.slice(0, 10) : "";
 		const time = /[hs]/i.test(code) ? iso.slice(11, 19) : "";
 		return [date, time].filter(Boolean).join(" ");
 	}
@@ -266,35 +274,35 @@ function readXlsx(path: string, offset?: number, limit?: number): Block[] {
 
 /** Each DrawingML paragraph's text, one per line. */
 const paragraphs = (x: string) =>
-	[...x.matchAll(/<a:p>([\s\S]*?)<\/a:p>/g)]
-		.map(([, p]) => decode(p.replace(/<a:br\b[^>]*>/g, "<a:t>\n</a:t>").match(/<a:t>[^<]*<\/a:t>/g)?.map((t) => t.slice(5, -6)).join("") ?? ""))
+	[...x.matchAll(/<a:p(?:\s[^>]*)?(?<!\/)>([\s\S]*?)<\/a:p>/g)]
+		.map(([, p]) => decode([...p.replace(/<a:br\b[^>]*>/g, "<a:t>\n</a:t>").matchAll(/<a:t(?:\s[^>]*)?>([^<]*)<\/a:t>/g)].map((t) => t[1]).join("")))
 		.filter((t) => t.trim());
 
 export function chartTable(x: string): string {
-	const points = (part = "") => {
-		const out: string[] = [];
-		for (const [, i, v] of part.matchAll(/<c:pt idx="(\d+)"[^>]*>\s*<c:v>([^<]*)<\/c:v>/g)) out[Number(i)] = decode(v);
-		return out;
-	};
+	// By index, kept sparse: a lone idx="100000000" must not make 100 million rows.
+	const points = (part = "") =>
+		new Map([...part.matchAll(/<c:pt idx="(\d+)"[^>]*>\s*<c:v>([^<]*)<\/c:v>/g)].map(([, i, v]) => [Number(i), decode(v)] as const));
 	const series = [...x.matchAll(/<c:ser>([\s\S]*?)<\/c:ser>/g)].map(([, s]) => ({
 		name: /<c:v>([^<]*)<\/c:v>/.exec(/<c:tx>[\s\S]*?<\/c:tx>/.exec(s)?.[0] ?? "")?.[1] ?? "",
 		cats: points(/<c:(?:cat|xVal)>[\s\S]*?<\/c:(?:cat|xVal)>/.exec(s)?.[0]),
 		vals: points(/<c:(?:val|yVal)>[\s\S]*?<\/c:(?:val|yVal)>/.exec(s)?.[0]),
 	}));
 	const title = paragraphs(/<c:title>[\s\S]*?<\/c:title>/.exec(x)?.[0] ?? "").join(" ");
-	const n = Math.max(0, ...series.flatMap((s) => [s.cats.length, s.vals.length]));
-	const cats = series.find((s) => s.cats.length)?.cats ?? [];
+	const cats = series.find((s) => s.cats.size)?.cats ?? new Map<number, string>();
+	const key = (m: Map<number, string>) => [...m].join("\0");
 	const head = `Chart${title ? ` "${title}"` : ""} (${/<c:(\w+Chart)>/.exec(x)?.[1] ?? "chart"}):`;
 	// Series with their own X values (a scatter chart) can't share one category column: list each point.
-	if (series.some((s) => s.cats.length && s.cats.join("\0") !== cats.join("\0"))) {
-		const rows = series.flatMap((s) => s.vals.map((y, i) => `| ${decode(s.name)} | ${s.cats[i] ?? i + 1} | ${y ?? ""} |`));
+	if (series.some((s) => s.cats.size && key(s.cats) !== key(cats))) {
+		const rows = series.flatMap((s) => [...s.vals].map(([i, y]) => `| ${decode(s.name)} | ${s.cats.get(i) ?? i + 1} | ${y} |`));
 		return [head, "| Series | X | Y |", "|---|---|---|", ...rows].join("\n");
 	}
 	return [
 		head,
 		`| Category | ${series.map((s) => decode(s.name)).join(" | ")} |`,
 		`|---${"|---".repeat(series.length)}|`,
-		...Array.from({ length: n }, (_, i) => `| ${cats[i] ?? i + 1} | ${series.map((s) => s.vals[i] ?? "").join(" | ")} |`),
+		...[...new Set(series.flatMap((s) => [...s.cats.keys(), ...s.vals.keys()]))]
+			.sort((a, b) => a - b)
+			.map((i) => `| ${cats.get(i) ?? i + 1} | ${series.map((s) => s.vals.get(i) ?? "").join(" | ")} |`),
 	].join("\n");
 }
 
@@ -354,7 +362,9 @@ async function readPptx(path: string, offset = 1, limit = DEFAULT_SLIDES, signal
 			.flatMap(([sp]) => paragraphs(sp))
 			.join("\n");
 		if (noteText) lines.push(`Speaker notes: ${noteText}`);
-		texts[s] = lines.join("\n\n");
+		// A slide's text has pi's read caps too: a chart part can list millions of points.
+		const cut = truncateHead(lines.join("\n\n"));
+		texts[s] = cut.content + (cut.truncated ? `\n\n[Slide ${s}'s text is ${formatSize(cut.totalBytes)}, cut to ${formatSize(cut.outputBytes)}.]` : "");
 		if (slideNeedsImage(x)) imaged.push(s);
 	}
 
