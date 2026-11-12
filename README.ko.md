@@ -19,13 +19,14 @@
 - **종료 전 리뷰 게이트** — pi가 멈추기 전에 다른 모델 계열이 프롬프트의 변경을 리뷰하고, 막히는 문제는 다시 돌려보냅니다.
 - **Claude CLI 연동** — 로그인된 `claude` CLI를 pi의 모델 프로바이더로 사용합니다.
 - **PDF 읽기** — `read`가 PDF 각 페이지의 텍스트를 보내고, 그림이 있거나 텍스트가 없는 페이지만 이미지로 함께 보냅니다.
+- **Office 파일 읽기** — `read`가 Word·Excel·PowerPoint 파일을 변경 추적, 댓글, 수식, 차트 숫자, 발표자 노트가 담긴 텍스트로 보내고, 이미지가 필요한 슬라이드만 이미지로 함께 보냅니다.
 - **선택적인 로컬 분류기** — Laya를 자동 시작·종료하고, 분류할 수 없으면 Opus로 진행합니다.
 
 ## 빠른 시작
 
 ### 1. 준비 및 설치
 
-`pi`와 Claude Code의 `claude` 명령어가 PATH에 있어야 하고, PDF를 읽으려면 poppler도 필요합니다(`brew install poppler`). 이 저장소는 독립 실행 앱이 아니라 pi에 로드하는 패키지입니다.
+`pi`와 Claude Code의 `claude` 명령어가 PATH에 있어야 하고, PDF를 읽으려면 poppler, Word 파일을 읽으려면 pandoc이 필요합니다(`brew install poppler pandoc`). PowerPoint 슬라이드 이미지에는 LibreOffice가 필요합니다(`brew install --cask libreoffice`). 없으면 해당 슬라이드에 들어 있는 그림 원본만 보냅니다. 이 저장소는 독립 실행 앱이 아니라 pi에 로드하는 패키지입니다.
 
 ```bash
 pi install git:github.com/halfmoon-mind/pi-halfmoon-setup
@@ -68,7 +69,7 @@ pi --model router/auto
 
 실행 중에는 `/model`로 `router/auto`를 선택할 수도 있습니다. Laya를 사용하는 경우 `/laya`로 상태를 확인합니다.
 
-시작할 때 이 패키지에 필요한데 이 머신에 없는 것(`claude` CLI나 그 로그인, `openai` 인증, poppler)을 경고하고, 첫 프롬프트 전까지 입력창 위에 워크플로 명령어를 한 줄로 보여 줍니다. pi가 로드한 스킬·확장 목록을 숨기려면 머신마다 `~/.pi/agent/settings.json`에 `"quietStartup": "header"`를 설정하세요.
+시작할 때 이 패키지에 필요한데 이 머신에 없는 것(`claude` CLI나 그 로그인, `openai` 인증, poppler, pandoc, LibreOffice)을 경고하고, 첫 프롬프트 전까지 입력창 위에 워크플로 명령어를 한 줄로 보여 줍니다. pi가 로드한 스킬·확장 목록을 숨기려면 머신마다 `~/.pi/agent/settings.json`에 `"quietStartup": "header"`를 설정하세요.
 
 ## 사용 예시
 
@@ -148,6 +149,30 @@ pi의 `read`는 PDF를 페이지별 텍스트 레이어(`pdftotext -layout`)로 
 | PDF 전체를 document 블록으로 (Claude Code `Read`의 `pages` 미사용 시) | 24.2K / 13.9K / 9.5K | 72/72 |
 | 이 확장 | 19.4K / 11.8K / 7.9K | 108/108 |
 
+### Office 파일 읽기
+
+`read`는 `.docx`, `.xlsx`, `.pptx`(매크로가 든 `m` 버전 포함)도 엽니다. 파일의 XML에 정확히 들어 있는 것은 텍스트로 보내고, 텍스트로 전달되지 않는 것만 이미지로 보냅니다.
+
+- **Word**: pandoc의 Markdown(`pandoc -s -t gfm --track-changes=all`)으로 보내므로 변경 추적의 삽입·삭제와 댓글이 `<span>` 태그로 남습니다. 내장 그림은 원래 위치에 이미지로 넣고, pandoc이 빠뜨리는 머리글·바닥글 텍스트를 앞에 붙입니다. `offset`과 `limit`은 줄 단위입니다.
+- **Excel**: 시트마다 열 문자와 행 번호가 붙은 그리드로 보냅니다. 값은 숫자 서식대로 보이는 모습으로 쓰고, 수식은 값 뒤에, 병합 범위는 시트 머리에 적습니다. 시트를 렌더링하면 좁은 열이 잘리고(`###`) 수식과 셀 주소를 잃어서 이미지는 보내지 않습니다. `offset`과 `limit`은 줄 단위입니다.
+- **PowerPoint**: 슬라이드마다 제목, 본문, 표, 차트 숫자(차트 XML에서 꺼내므로 데이터 레이블이 없어도 정확), 발표자 노트를 보냅니다. 그림, 연결선, 다이어그램, 텍스트 상자가 아닌 도형이 있는 슬라이드만 LibreOffice로 렌더링한 긴 변 1,100px JPEG를 함께 보냅니다. LibreOffice가 없으면 그 슬라이드에 들어 있는 그림 원본만 붙입니다. `offset`과 `limit`은 슬라이드 단위이며, 기본 10장, 한 번에 최대 20장입니다.
+
+형식마다 보내는 방식별로 잃을 수 있는 것을 담은 테스트 문서를 하나씩 만들어 측정했습니다. 변경 추적, 댓글, 병합 셀 표, 차트 그림, 머리글이 든 계약서; 수식, 병합 헤더, 시트 간 참조, 거래 150행이 든 예산 통합문서; 데이터 레이블 없는 차트, 발표자 노트, 스크린샷, 화살표 순서도, 색으로만 표시한 상태가 든 발표 자료입니다. 문서마다 12문제를 `claude -p`(Opus 5.5, medium effort)로 3번씩 묻고, 정답 키를 준 Sonnet이 채점했습니다. 형식마다 문서가 하나이고 질문은 방식별로 빠지는 정보를 노렸으므로, 이 표는 얼마나 자주 틀리는지보다 무엇을 놓치는지를 보여 줍니다.
+
+| 파일을 보내는 방식 | 토큰 | 정답 | 놓친 것 |
+|---|---|---|---|
+| Word 텍스트만 (textutil, markitdown, pandoc 기본값) | 0.3–0.6K | 21/36 | 수정 전 문구, 삭제된 문장, 댓글, 차트 그림, 머리글 |
+| Word 페이지 이미지, 또는 렌더링한 PDF를 PDF 읽기로 | 2.5K / 3.0K | 33/36 | 댓글 |
+| **Word, 이 확장** | **1.1K** | **36/36** | |
+| Excel CSV 또는 markitdown | 4.3K / 5.7K | 33/36 | 수식 |
+| Excel을 Numbers 또는 LibreOffice로 렌더링한 페이지 이미지 | 5.7K / 8.8K | 32/36, 30/36 | 수식, 잘린 셀 |
+| Excel을 Numbers 또는 LibreOffice로 렌더링해 PDF 읽기로 | 7.7K / 7.2K | 30/36, 24/36 | 수식, 셀 주소, 잘린 셀 |
+| **Excel, 이 확장** | **6.7K** | **36/36** | |
+| PowerPoint markitdown 텍스트 | 0.7K | 27/36 | 스크린샷, 화살표, 색 |
+| PowerPoint 슬라이드 이미지, 또는 렌더링한 PDF를 PDF 읽기로 | 10.4K / 7.9K | 33/36 | 발표자 노트 |
+| PowerPoint, 이 확장 (LibreOffice 없음) | 1.1K | 30/36 | 화살표, 색 |
+| **PowerPoint, 이 확장** | **3.5K** | **36/36** | |
+
 ## 분류기 설정
 
 기본값은 로컬 Laya입니다. pi의 TypeSafe Jev 클라이언트를 로컬 서버에 연결하므로 두 모드 모두 분류기 식별자가 `typesafe/jev-latest`로 표시될 수 있습니다.
@@ -200,6 +225,8 @@ pi --model router/auto
 | `deep-worker`, 리뷰 단계, 리뷰 게이트의 인증 오류 | `openai` 프로바이더 인증 및 해당 모델 접근 권한 확인 |
 | 프로젝트 에이전트가 선택되지 않음 | `agentScope: "both"` 또는 `"project"` 사용 여부 확인 |
 | PDF를 읽을 때 `pdfinfo not found` | poppler 설치: `brew install poppler` 또는 `apt-get install poppler-utils` |
+| .docx를 읽을 때 `pandoc not found` | pandoc 설치: `brew install pandoc` 또는 `apt-get install pandoc` |
+| .pptx를 읽을 때 LibreOffice가 슬라이드를 렌더링하지 못했다고 나옴 | LibreOffice 설치: `brew install --cask libreoffice`. 설치 전까지 해당 슬라이드에는 그림 원본만 붙음 |
 
 Claude 요청은 `claude -p`를 통해 실행됩니다. 따라서 Claude Code의 사용자 설정, 훅, 플러그인이 요청에 영향을 줄 수 있습니다. Claude Code의 MCP 서버와 내장 도구는 웹 검색·가져오기 외에는 쓰지 않습니다. pi의 도구는 MCP 서버를 거쳐 Claude에 전달되고, `claude` 프로세스 하나가 턴 사이에도 대화를 유지합니다. 인증 정보와 머신별 UI 설정은 저장소가 아닌 각 머신의 pi·Claude 설정에서 관리하세요.
 
@@ -214,6 +241,7 @@ extensions/
   footer.ts                 라우팅된 tier와 모델을 보여 주는 2줄 하단 표시줄
   review-gate.ts            프롬프트마다 변경을 리뷰하는 종료 전 게이트
   pdf-read.ts               PDF용 read: 페이지 텍스트와 필요한 페이지의 이미지
+  office-read.ts            .docx·.xlsx·.pptx용 read: 텍스트와 필요한 곳의 이미지
   tab-follow-up.ts          에이전트 실행 중 Tab으로 후속 질문 대기열에 추가
   test-hooks.ts             테스트에서 pi 패키지를 pi와 같은 방식으로 불러오는 설정
   subagent/                 서브에이전트 실행 및 에이전트 탐색
@@ -229,7 +257,7 @@ Node.js 22.18 이상과 pi가 설치된 환경에서 저장소 루트를 기준�
 npm test
 ```
 
-라우터의 분류·폴백·모델 선택·프로세스 수명, 서브에이전트의 에이전트 로드와 chain 실행, 리뷰 게이트의 변경 감지와 판정, `read`가 이미지를 붙이는 PDF 페이지와 페이지 범위, Claude CLI 프로바이더의 시스템 프롬프트 전달·도구 호출·CLI 오류 처리를 검증합니다. pi 패키지는 설치된 pi(`~/.pi/agent/install`)에서 불러오고, `pi`와 `claude` 실행은 가짜 프로세스로 대체합니다. 실제 모델 프로바이더 인증과 전체 워크플로 실행은 별도로 확인해야 합니다.
+라우터의 분류·폴백·모델 선택·프로세스 수명, 서브에이전트의 에이전트 로드와 chain 실행, 리뷰 게이트의 변경 감지와 판정, `read`가 이미지를 붙이는 PDF 페이지와 페이지 범위, Word 변경 추적·Excel 셀과 수식·PowerPoint 차트 숫자와 노트와 그림을 보내는 방식, Claude CLI 프로바이더의 시스템 프롬프트 전달·도구 호출·CLI 오류 처리를 검증합니다. pi 패키지는 설치된 pi(`~/.pi/agent/install`)에서 불러오고, `pi`와 `claude` 실행은 가짜 프로세스로 대체합니다. 실제 모델 프로바이더 인증과 전체 워크플로 실행은 별도로 확인해야 합니다.
 
 GitHub Actions는 push·PR마다, 그리고 매주 npm의 최신 pi를 설치해 같은 테스트를 실행합니다. 그래서 pi 업데이트로 이 패키지가 깨지면 바로 드러납니다.
 
