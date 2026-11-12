@@ -18,13 +18,14 @@ Use the same model router, subagents, and workflow prompts on every machine. `ro
 - **Workflow commands** — chain work with `/implement`, `/scout-and-plan`, and `/implement-and-review`.
 - **Stop-time review gate** — another model family reviews each prompt's changes before pi stops, and sends blocking issues back.
 - **Claude CLI provider** — uses your logged-in `claude` CLI as a pi model provider.
+- **PDF reading** — `read` sends each PDF page's text, plus an image of only the pages with figures or no text.
 - **Optional local classifier** — starts and stops Laya automatically, and falls back to Opus when it cannot classify.
 
 ## Quick start
 
 ### 1. Prerequisites and install
 
-`pi` and Claude Code's `claude` command must be on your PATH. This repository is not a standalone app; it is a package that pi loads.
+`pi` and Claude Code's `claude` command must be on your PATH, and poppler too for reading PDFs (`brew install poppler`). This repository is not a standalone app; it is a package that pi loads.
 
 ```bash
 pi install git:github.com/halfmoon-mind/pi-halfmoon-setup
@@ -132,6 +133,19 @@ Like the Codex plugin's stop-time review in Claude Code: when a prompt's run cha
 | `/review-gate on` | Turn the gate on (the default) |
 | `/review-gate off` | Turn the gate off for every pi that shares this config directory |
 
+### PDF reading
+
+pi's `read` sends a PDF as each page's text layer (`pdftotext -layout`), plus a JPEG, 1,100 px on its long side, of the pages that draw (10 or more vector paths: charts, diagrams, ruled tables), embed a picture, or have under 100 characters of text (scans). For a PDF, `offset` and `limit` count pages: 10 by default, at most 20 per call. Other files go to pi's own `read`.
+
+Text keeps table numbers exact, and an image carries what text cannot, so a page gets an image only when it needs one. Measured on six pages each of a two-column paper, an FOMC projections report, and a scanned paper, with 12 questions per document on prose, tables, and charts, asked through `claude -p` on Opus 5.5 at medium effort, twice or three times each:
+
+| How the PDF is sent | Tokens (paper / report / scan) | Correct |
+|---|---|---|
+| Text layer only | 15.0K / 4.6K / 0.1K | 34/72: no charts, nothing from the scan |
+| Every page as a 100 dpi image (Claude Code's `Read` with `pages`) | 7.5K / 7.5K / 7.8K | 69/72: misreads in dense tables |
+| The whole PDF as a document block (Claude Code's `Read` without `pages`) | 24.2K / 13.9K / 9.5K | 72/72 |
+| This extension | 19.4K / 11.8K / 7.9K | 108/108 |
+
 ## Classifier settings
 
 The default is local Laya. The router points pi's TypeSafe Jev client at the local server, so in both modes the classifier may show up as `typesafe/jev-latest`.
@@ -183,6 +197,7 @@ Each newly routed session appends one JSON line to `~/.pi/agent/laya-dataset.jso
 | `is not in the model catalog` | Check that the chosen provider is loaded and check pi's model catalog |
 | Auth errors in `deep-worker`, a review step, or the review gate | Check the `openai` provider's authentication and your access to the model |
 | A project agent is not picked up | Check that you pass `agentScope: "both"` or `"project"` |
+| `pdfinfo not found` when reading a PDF | Install poppler: `brew install poppler`, or `apt-get install poppler-utils` |
 
 Claude requests run through `claude -p`, so Claude Code's user settings, hooks, and plugins can affect them. Its MCP servers and its built-in tools are left out, except web search and fetch; pi's own tools reach Claude through an MCP server, and one `claude` process keeps the conversation between turns. Keep credentials and per-machine UI settings in each machine's pi and Claude config, not in this repository.
 
@@ -196,6 +211,7 @@ extensions/
   router.test.ts            Router tests
   footer.ts                 Two-line footer with the routed tier and model
   review-gate.ts            Stop-time review of each prompt's changes
+  pdf-read.ts               read for PDFs: page text plus images where needed
   test-hooks.ts             Loads pi's packages in tests the way pi does
   subagent/                 Subagent runs and agent discovery
   pi-claude-cli/            Claude CLI provider
@@ -210,7 +226,7 @@ Run from the repository root with Node.js 22.18 or later and pi installed.
 npm test
 ```
 
-The tests cover the router's classification, fallback, model selection, and process lifetime; the subagent tool's agent loading and chain runs; the review gate's change detection and verdicts; and the Claude CLI provider's system prompt handoff, tool calls, and CLI error handling. pi's packages load from the installed pi (`~/.pi/agent/install`), and fake processes stand in for `pi` and `claude`. Real provider authentication and full workflow runs need to be checked separately.
+The tests cover the router's classification, fallback, model selection, and process lifetime; the subagent tool's agent loading and chain runs; the review gate's change detection and verdicts; which PDF pages `read` sends with an image, and its page ranges; and the Claude CLI provider's system prompt handoff, tool calls, and CLI error handling. pi's packages load from the installed pi (`~/.pi/agent/install`), and fake processes stand in for `pi` and `claude`. Real provider authentication and full workflow runs need to be checked separately.
 
 GitHub Actions runs the same tests on every push and PR, and weekly against the newest pi from npm, so a pi update that breaks this package shows up right away.
 

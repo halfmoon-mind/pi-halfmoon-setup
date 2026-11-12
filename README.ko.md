@@ -18,13 +18,14 @@
 - **워크플로 명령어** — `/implement`, `/scout-and-plan`, `/implement-and-review`로 작업을 연결합니다.
 - **종료 전 리뷰 게이트** — pi가 멈추기 전에 다른 모델 계열이 프롬프트의 변경을 리뷰하고, 막히는 문제는 다시 돌려보냅니다.
 - **Claude CLI 연동** — 로그인된 `claude` CLI를 pi의 모델 프로바이더로 사용합니다.
+- **PDF 읽기** — `read`가 PDF 각 페이지의 텍스트를 보내고, 그림이 있거나 텍스트가 없는 페이지만 이미지로 함께 보냅니다.
 - **선택적인 로컬 분류기** — Laya를 자동 시작·종료하고, 분류할 수 없으면 Opus로 진행합니다.
 
 ## 빠른 시작
 
 ### 1. 준비 및 설치
 
-`pi`와 Claude Code의 `claude` 명령어가 PATH에 있어야 합니다. 이 저장소는 독립 실행 앱이 아니라 pi에 로드하는 패키지입니다.
+`pi`와 Claude Code의 `claude` 명령어가 PATH에 있어야 하고, PDF를 읽으려면 poppler도 필요합니다(`brew install poppler`). 이 저장소는 독립 실행 앱이 아니라 pi에 로드하는 패키지입니다.
 
 ```bash
 pi install git:github.com/halfmoon-mind/pi-halfmoon-setup
@@ -132,6 +133,19 @@ Claude Code에서 Codex 플러그인이 하는 종료 전 리뷰와 같습니다
 | `/review-gate on` | 게이트 켜기 (기본값) |
 | `/review-gate off` | 같은 설정 디렉터리를 쓰는 모든 pi에서 게이트 끄기 |
 
+### PDF 읽기
+
+pi의 `read`는 PDF를 페이지별 텍스트 레이어(`pdftotext -layout`)로 보내고, 다음 페이지에만 긴 변 1,100px JPEG를 함께 보냅니다: 벡터 경로가 10개 이상인 페이지(차트, 다이어그램, 괘선 표), 그림이 들어 있는 페이지, 공백을 뺀 텍스트가 100자 미만인 페이지(스캔본). PDF에서 `offset`과 `limit`은 페이지 단위이며, 기본 10페이지, 한 번에 최대 20페이지입니다. 다른 파일은 pi의 기본 `read`가 처리합니다.
+
+텍스트는 표의 숫자를 정확히 전달하고, 이미지는 텍스트에 없는 것을 전달하므로 이미지가 필요한 페이지에만 이미지를 붙입니다. 2단 논문, FOMC 경제전망 보고서, 스캔한 논문에서 각각 6페이지를 골라 문서마다 본문·표·차트에 관한 12문제를 `claude -p`(Opus 5.5, medium effort)로 2~3번씩 물어 측정했습니다:
+
+| PDF를 보내는 방식 | 토큰 (논문 / 보고서 / 스캔본) | 정답 |
+|---|---|---|
+| 텍스트 레이어만 | 15.0K / 4.6K / 0.1K | 34/72: 차트와 스캔본은 답하지 못함 |
+| 모든 페이지를 100dpi 이미지로 (Claude Code `Read`의 `pages` 사용 시) | 7.5K / 7.5K / 7.8K | 69/72: 빽빽한 표에서 잘못 읽음 |
+| PDF 전체를 document 블록으로 (Claude Code `Read`의 `pages` 미사용 시) | 24.2K / 13.9K / 9.5K | 72/72 |
+| 이 확장 | 19.4K / 11.8K / 7.9K | 108/108 |
+
 ## 분류기 설정
 
 기본값은 로컬 Laya입니다. pi의 TypeSafe Jev 클라이언트를 로컬 서버에 연결하므로 두 모드 모두 분류기 식별자가 `typesafe/jev-latest`로 표시될 수 있습니다.
@@ -183,6 +197,7 @@ pi --model router/auto
 | `is not in the model catalog` | 선택된 프로바이더의 로드 여부와 pi 모델 카탈로그 확인 |
 | `deep-worker`, 리뷰 단계, 리뷰 게이트의 인증 오류 | `openai` 프로바이더 인증 및 해당 모델 접근 권한 확인 |
 | 프로젝트 에이전트가 선택되지 않음 | `agentScope: "both"` 또는 `"project"` 사용 여부 확인 |
+| PDF를 읽을 때 `pdfinfo not found` | poppler 설치: `brew install poppler` 또는 `apt-get install poppler-utils` |
 
 Claude 요청은 `claude -p`를 통해 실행됩니다. 따라서 Claude Code의 사용자 설정, 훅, 플러그인이 요청에 영향을 줄 수 있습니다. Claude Code의 MCP 서버와 내장 도구는 웹 검색·가져오기 외에는 쓰지 않습니다. pi의 도구는 MCP 서버를 거쳐 Claude에 전달되고, `claude` 프로세스 하나가 턴 사이에도 대화를 유지합니다. 인증 정보와 머신별 UI 설정은 저장소가 아닌 각 머신의 pi·Claude 설정에서 관리하세요.
 
@@ -196,6 +211,7 @@ extensions/
   router.test.ts            라우터 테스트
   footer.ts                 라우팅된 tier와 모델을 보여 주는 2줄 하단 표시줄
   review-gate.ts            프롬프트마다 변경을 리뷰하는 종료 전 게이트
+  pdf-read.ts               PDF용 read: 페이지 텍스트와 필요한 페이지의 이미지
   test-hooks.ts             테스트에서 pi 패키지를 pi와 같은 방식으로 불러오는 설정
   subagent/                 서브에이전트 실행 및 에이전트 탐색
   pi-claude-cli/            Claude CLI 프로바이더
@@ -210,7 +226,7 @@ Node.js 22.18 이상과 pi가 설치된 환경에서 저장소 루트를 기준�
 npm test
 ```
 
-라우터의 분류·폴백·모델 선택·프로세스 수명, 서브에이전트의 에이전트 로드와 chain 실행, 리뷰 게이트의 변경 감지와 판정, Claude CLI 프로바이더의 시스템 프롬프트 전달·도구 호출·CLI 오류 처리를 검증합니다. pi 패키지는 설치된 pi(`~/.pi/agent/install`)에서 불러오고, `pi`와 `claude` 실행은 가짜 프로세스로 대체합니다. 실제 모델 프로바이더 인증과 전체 워크플로 실행은 별도로 확인해야 합니다.
+라우터의 분류·폴백·모델 선택·프로세스 수명, 서브에이전트의 에이전트 로드와 chain 실행, 리뷰 게이트의 변경 감지와 판정, `read`가 이미지를 붙이는 PDF 페이지와 페이지 범위, Claude CLI 프로바이더의 시스템 프롬프트 전달·도구 호출·CLI 오류 처리를 검증합니다. pi 패키지는 설치된 pi(`~/.pi/agent/install`)에서 불러오고, `pi`와 `claude` 실행은 가짜 프로세스로 대체합니다. 실제 모델 프로바이더 인증과 전체 워크플로 실행은 별도로 확인해야 합니다.
 
 GitHub Actions는 push·PR마다, 그리고 매주 npm의 최신 pi를 설치해 같은 테스트를 실행합니다. 그래서 pi 업데이트로 이 패키지가 깨지면 바로 드러납니다.
 
