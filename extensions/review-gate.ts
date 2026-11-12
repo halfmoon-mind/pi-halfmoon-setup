@@ -85,7 +85,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		// A failed review never blocks: looping the model on a reviewer outage helps no one.
 		if (verdict.startsWith("ALLOW:")) ctx.ui.notify(`review: ${verdict.slice(6).trim()}`, "info");
-		else ctx.ui.notify("review gate: the reviewer gave no verdict, so this turn went unreviewed", "warning");
+		else ctx.ui.notify(`review gate: the reviewer gave no verdict, so this turn went unreviewed (first line: ${verdict ? JSON.stringify(verdict.slice(0, 200)) : "none, the review failed or timed out"})`, "warning");
 	});
 
 	pi.registerCommand("review-gate", {
