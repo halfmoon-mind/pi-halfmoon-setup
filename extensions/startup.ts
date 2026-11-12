@@ -23,6 +23,8 @@ export async function missing(ctx: Pick<ExtensionContext, "modelRegistry">): Pro
 		found.push("openai has no credentials, so the review gate, reviewer, plan-reviewer and deep-worker fail: /login or OPENAI_API_KEY");
 	}
 	if (!onPath("pdftotext")) found.push("poppler not found, so read cannot open PDFs: brew install poppler");
+	if (!onPath("pandoc")) found.push("pandoc not found, so read cannot open .docx: brew install pandoc");
+	if (!onPath("soffice")) found.push("LibreOffice not found, so read sends .pptx slides without diagrams and shape colors: brew install --cask libreoffice");
 	return found;
 }
 

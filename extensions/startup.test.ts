@@ -13,8 +13,8 @@ test("each missing tool or login is named with its fix, and a set-up machine get
 	process.env.PATH = bin;
 	const registry = (configured: boolean) => ({ modelRegistry: { getProviderAuthStatus: () => ({ configured }) } }) as any;
 
-	assert.deepEqual((await missing(registry(false))).map((m) => m.split(",")[0]), ["claude CLI not found", "openai has no credentials", "poppler not found"]);
-	for (const name of ["claude", "pdftotext"]) writeFileSync(join(bin, name), "");
+	assert.deepEqual((await missing(registry(false))).map((m) => m.split(",")[0]), ["claude CLI not found", "openai has no credentials", "poppler not found", "pandoc not found", "LibreOffice not found"]);
+	for (const name of ["claude", "pdftotext", "pandoc", "soffice"]) writeFileSync(join(bin, name), "");
 	assert.match((await missing(registry(true)))[0], /not logged in.*claude auth login/);
 	writeFileSync(join(process.env.CLAUDE_CONFIG_DIR, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "tok" } }));
 	assert.deepEqual(await missing(registry(true)), []);
