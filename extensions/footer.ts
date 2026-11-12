@@ -150,6 +150,8 @@ function sessionStats(pi: ExtensionAPI, ctx: ExtensionContext): Stats {
 				stats.cost += result.usage.cost;
 			}
 		}
+		// review-gate.ts logs each review's usage the same way, in a custom entry.
+		if (entry.type === "custom" && entry.customType === "review-gate") stats.cost += (entry.data as { usage?: { cost: number } } | undefined)?.usage?.cost ?? 0;
 	}
 	const branch = ctx.sessionManager.getBranch();
 	for (let i = branch.length - 1; i >= 0 && !stats.latest; i--) {

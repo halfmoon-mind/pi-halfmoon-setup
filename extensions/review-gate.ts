@@ -78,6 +78,8 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const agents = discoverAgents(ctx.cwd, "user").agents;
 			const result = await runSingleAgent(ctx.cwd, {}, agents, "reviewer", task, undefined, undefined, AbortSignal.timeout(REVIEW_TIMEOUT_MS), undefined, (results) => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results }));
+			// The reviewer runs in its own pi with no session file, so its tokens and cost are kept here.
+			pi.appendEntry("review-gate", { model: result.model, usage: result.usage, verdict: getResultOutput(result).split("\n", 1)[0].slice(0, 200) });
 			if (isFailedResult(result)) failure = `exit ${result.exitCode}, ${result.stopReason ?? "no stop reason"}: ${getResultOutput(result).trim()}`;
 			else output = getResultOutput(result).trim();
 		} catch (err) {

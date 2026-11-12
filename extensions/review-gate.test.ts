@@ -31,7 +31,8 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 
 	const handlers: Record<string, any> = {};
 	const commands: Record<string, any> = {};
-	reviewGate({ on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: (name: string, def: any) => (commands[name] = def) } as any);
+	const logged: any[] = [];
+	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: (name: string, def: any) => (commands[name] = def) } as any);
 	const notices: string[] = [];
 	const statuses: Record<string, string | undefined> = {};
 	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), notify: (msg: string) => notices.push(msg) };
@@ -58,6 +59,7 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	assert.equal(await settle(), undefined);
 	assert.deepEqual(notices, ["review: fixed"]);
 	assert.equal(reviewCount(), 2);
+	assert.deepEqual(logged.map((entry) => [entry.customType, entry.verdict, typeof entry.usage.cost]), [["review-gate", "BLOCK: off by one", "number"], ["review-gate", "ALLOW: fixed", "number"]]);
 
 	// Off is the state that shows, in the footer of every pi it applies to.
 	await commands["review-gate"].handler("off", ctx);

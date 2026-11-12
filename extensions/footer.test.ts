@@ -50,12 +50,13 @@ test("under router/auto: tier leads the routed model, its thinking level once, a
 	const lines = renderFooter({ provider: "router", id: "auto", api: "pi-virtual", reasoning: true }, [
 		assistant("openai", "gpt-6.1-sol", usage(1000, 0, 0.5)),
 		{ type: "message", message: { role: "toolResult", toolName: "subagent", details: { results: [{ usage: { cost: 0.25 } }] } } },
+		{ type: "custom", customType: "review-gate", data: { usage: { cost: 0.125 } } },
 		assistant("pi-claude-cli", "claude-opus-5-5", usage(1000, 3000, 2)),
 		assistant("pi-claude-cli", "claude-opus-5-5", usage(9000, 0, 1), { stopReason: "aborted" }),
 	], { router: "complex 82%", laya: "laya starting", claude: "claude 5h 3% · 7d 64%" });
 	assert.deepEqual([...lines], [
 		"~/projects/app (main) • fix login | claude 5h 3% · 7d 64% · laya starting",
-		"CH75% $3.750 ━━━━━━━━── 80%/100k (auto) | complex 82% → claude-opus-5-5 • medium",
+		"CH75% $3.875 ━━━━━━━━── 80%/100k (auto) | complex 82% → claude-opus-5-5 • medium",
 	]);
 });
 
