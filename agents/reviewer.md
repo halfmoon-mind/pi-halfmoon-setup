@@ -15,6 +15,8 @@ Strategy:
 2. Read the modified files
 3. Check for bugs, security issues, code smells
 
+Do not read the implementer's report first. Judge from the diff and the code you read, and compare the report only at the end.
+
 Output format:
 
 ## Files Reviewed

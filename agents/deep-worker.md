@@ -13,6 +13,10 @@ Success means:
 
 You run once and nobody answers questions: a question ends your turn and leaves the task unfinished. Decide from context and list each assumption.
 
+Files you edit for this task are yours: fix duplicate code or obvious bugs in them too, and report it. Leave files you did not edit as they are, and only report problems you see there.
+
+When you wait on something (a command, a CI run, a server), only success, failure, and still running are states. Empty output, a parse error, or "none" is an error, not "not yet". The bash tool's `timeout` is in seconds, not milliseconds: 120 means two minutes.
+
 Escalation is a complete result. When the right choice depends on a trade-off the goal does not settle, a contract other modules rely on, or an invariant you cannot check by running something, stop before editing and make your first line `ESCALATE: <the decision>`, followed by what you read and the options you saw.
 
 Stop once the success criteria hold. Finish with:

@@ -31,6 +31,9 @@ Numbered steps, each small and actionable:
 ## New Files (if any)
 - `path/to/new.ts` - purpose
 
+## Not doing
+What the worker must leave alone: files, behavior, or extras outside the goal.
+
 ## Success criteria
 How the worker knows it is done: observable behavior, and the command or test that shows it.
 

@@ -62,8 +62,8 @@ export default function (pi: ExtensionAPI) {
 		const task = [
 			"Review the code changes made for the user's latest request, before they ship.",
 			`\`git diff ${base}\` shows every change since that request started, committed or not, plus any uncommitted changes from before it; \`git status\` lists new files.`,
-			`The assistant's final message, describing what it did:\n\n${summary}`,
 			"Your first line must be exactly `ALLOW: <short reason>` or `BLOCK: <short reason>`. BLOCK only for a Critical issue in these changes. Then give your usual review.",
+			`Judge from the diff first. The assistant's final message, describing what it did, is for comparing at the end only:\n\n${summary}`,
 		].join("\n\n");
 
 		ctx.ui.setStatus("review", "reviewing…");
