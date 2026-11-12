@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { createReadToolDefinition, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { compact } from "./compact-tools.ts";
 
 const DEFAULT_PAGES = 10;
 const MAX_PAGES = 20;
@@ -66,7 +67,7 @@ export async function readPdf(path: string, offset = 1, limit = DEFAULT_PAGES, s
 
 export default function (pi: ExtensionAPI) {
 	const read = createReadToolDefinition(process.cwd());
-	pi.registerTool({
+	pi.registerTool(compact({
 		...read,
 		description: `${read.description} For a PDF, offset and limit count pages (${DEFAULT_PAGES} by default, at most ${MAX_PAGES} per call), and you get each page's text plus an image of the pages with figures or no text.`,
 		async execute(id, params, signal, onUpdate, ctx) {
@@ -76,5 +77,5 @@ export default function (pi: ExtensionAPI) {
 			const text = content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("\n");
 			return { content, details: undefined, structuredContent: text };
 		},
-	});
+	}));
 }
