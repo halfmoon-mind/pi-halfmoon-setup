@@ -86,7 +86,7 @@ test("pi 0.99's system message reaches claude as the system prompt, and claude k
 	const { args, sys, inputs } = recorded();
 	assert.deepEqual(
 		["--model", "--effort", "--thinking-display", "--permission-mode", "--tools"].map((name) => flag(args, name)),
-		[opus.id, "max", "summarized", "default", "WebSearch,WebFetch"],
+		[opus.id, "high", "summarized", "default", "WebSearch,WebFetch"],
 	);
 	assert.ok(["--no-session-persistence", "--strict-mcp-config"].every((name) => args.includes(name)));
 	assert.ok(!args.includes("--session-id") && !args.includes("--resume"));

@@ -1,52 +1,25 @@
 /**
  * Thinking effort configuration for mapping pi's ThinkingLevel to Claude CLI --effort flags.
  *
- * Maps pi's reasoning levels (minimal/low/medium/high/xhigh) to the CLI's effort
- * levels (low/medium/high/max). Opus models get an elevated mapping where medium
- * becomes high and high becomes max, leveraging their superior reasoning capability.
+ * Every model gets the CLI level of the same name (minimal becomes low), so `claude-opus:high`
+ * runs at high. The CLI's max is never sent. claude 2.1.322 accepted xhigh and max from
+ * Opus 5.5, Fable 5.1, and Haiku 4.5 alike.
  *
  * IMPORTANT: The CLI does NOT support --thinking-budget. Only --effort is supported.
  */
 
 import type { ThinkingLevel, ThinkingBudgets } from "@mariozechner/pi-ai";
 
-/** CLI effort levels accepted by the --effort flag */
-export type CliEffortLevel = "low" | "medium" | "high" | "max";
+/** CLI effort levels this provider sends via the --effort flag */
+export type CliEffortLevel = "low" | "medium" | "high" | "xhigh";
 
-/**
- * Standard model mapping: pi ThinkingLevel -> CLI effort.
- * Non-Opus models never receive "max" (would cause CLI error).
- */
-const STANDARD_EFFORT_MAP: Record<ThinkingLevel, CliEffortLevel> = {
+const EFFORT_MAP: Record<ThinkingLevel, CliEffortLevel> = {
   minimal: "low",
   low: "low",
   medium: "medium",
   high: "high",
-  xhigh: "high", // non-Opus: silently downgrade (max not supported)
+  xhigh: "xhigh",
 };
-
-/**
- * Opus model mapping: shifted up for elevated reasoning.
- * Opus models get max capability at high/xhigh levels.
- */
-const OPUS_EFFORT_MAP: Record<ThinkingLevel, CliEffortLevel> = {
-  minimal: "low",
-  low: "low",
-  medium: "high", // shifted: standard high
-  high: "max", // shifted: maximum capability
-  xhigh: "max", // Opus gets max
-};
-
-/**
- * Detect whether a model ID refers to an Opus model.
- * Uses includes('opus') for forward-compatibility with future Opus versions.
- *
- * @param modelId - The model identifier string
- * @returns true if the model is an Opus variant
- */
-export function isOpusModel(modelId: string): boolean {
-  return modelId.includes("opus");
-}
 
 /**
  * Map pi's ThinkingLevel to a CLI effort string.
@@ -57,13 +30,11 @@ export function isOpusModel(modelId: string): boolean {
  * not token budgets.
  *
  * @param reasoning - Pi's thinking level (undefined = omit flag)
- * @param modelId - Model ID for Opus detection
  * @param thinkingBudgets - Custom budgets (logged as unsupported, not applied)
  * @returns CLI effort level string, or undefined if flag should be omitted
  */
 export function mapThinkingEffort(
   reasoning?: ThinkingLevel,
-  modelId?: string,
   thinkingBudgets?: ThinkingBudgets,
 ): CliEffortLevel | undefined {
   if (reasoning === undefined) {
@@ -77,7 +48,5 @@ export function mapThinkingEffort(
     );
   }
 
-  const isOpus = modelId ? isOpusModel(modelId) : false;
-  const map = isOpus ? OPUS_EFFORT_MAP : STANDARD_EFFORT_MAP;
-  return map[reasoning];
+  return EFFORT_MAP[reasoning];
 }

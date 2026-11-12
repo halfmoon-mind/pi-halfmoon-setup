@@ -94,7 +94,6 @@ export function streamViaCli(
     const cwd = options?.cwd ?? process.cwd();
     const effort = mapThinkingEffort(
       options?.reasoning,
-      model.id,
       options?.thinkingBudgets,
     );
     const key = JSON.stringify([
