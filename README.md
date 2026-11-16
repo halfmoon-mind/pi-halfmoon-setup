@@ -22,21 +22,23 @@ Use the same model router, subagents, and workflow prompts on every machine. `ro
 - **PDF reading** — `read` sends each PDF page's text, plus an image of only the pages with figures or no text.
 - **Office file reading** — `read` sends Word, Excel and PowerPoint files as text with tracked changes, comments, formulas, chart data and speaker notes, plus an image of only the slides that need one.
 - **Optional local classifier** — starts and stops Laya automatically, and falls back to Opus when it cannot classify.
+- **Sandbox** — bash runs in an OS sandbox that writes only in the project and temp dirs, reaches only allowed hosts, and cannot read the listed credential paths; pi's file tools follow the same paths, and a few risky actions ask first.
 
 ## Quick start
 
 ### 1. Prerequisites and install
 
-`pi` and Claude Code's `claude` command must be on your PATH, poppler for reading PDFs and pandoc for Word files (`brew install poppler pandoc`), and LibreOffice for PowerPoint slide images (`brew install --cask libreoffice`; without it, those slides come with their embedded pictures only). This repository is not a standalone app; it is a package that pi loads.
+`pi` and Claude Code's `claude` command must be on your PATH, poppler for reading PDFs and pandoc for Word files (`brew install poppler pandoc`), LibreOffice for PowerPoint slide images (`brew install --cask libreoffice`; without it, those slides come with their embedded pictures only), and ripgrep for the bash sandbox (`brew install ripgrep`; on Linux also bubblewrap and socat: `apt-get install bubblewrap socat ripgrep`). This repository is not a standalone app; it is a package that pi loads.
 
 ```bash
 pi install git:github.com/halfmoon-mind/pi-halfmoon-setup
 claude auth login
 ```
 
-To use a local checkout instead, install it like this. After editing, run `/reload` in pi to load the changes.
+To use a local checkout instead, install its dependency and then the checkout (pi does not install dependencies for a local source). After editing, run `/reload` in pi to load the changes.
 
 ```bash
+cd ~/projects/pi-halfmoon-setup && npm ci
 pi install ~/projects/pi-halfmoon-setup
 ```
 
@@ -190,6 +192,30 @@ Measured on one test document per format, built to hold what each way of sending
 | PowerPoint through this extension without LibreOffice | 1.1K | 30/36 | The arrows, the colors |
 | **PowerPoint through this extension** | **3.5K** | **36/36** | |
 
+### Sandbox
+
+bash runs inside [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropics/sandbox-runtime) (sandbox-exec on macOS, bubblewrap on Linux). pi's in-process file tools (`read`, `grep`, `find`, `ls`, `write`, `edit`, and `handoff`'s plan read) are checked against the same paths before they run.
+
+- **Writes** go only to the project (the directory pi started in), the temp dir and `/tmp`. A subagent or other pi without a UI keeps the project of the pi that started it, so its `cwd` cannot widen that. pi's agent dir (`~/.pi/agent`) and the runtime's always-protected names (`.bashrc`, `.zshrc`, `.gitconfig`, `.git/hooks`, `.git/config`, `.vscode`, `.claude/commands`, and the rest) are never writable.
+- **Reads** are open except `~/.ssh` (its `config` and `known_hosts` stay readable), `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.config/gh` and `~/.pi/agent/auth.json`. `grep` over a directory holding one of them is refused too. Credentials elsewhere, or in environment variables, are not protected.
+- **Network** reaches `github.com`, `*.github.com`, `*.githubusercontent.com`, `registry.npmjs.org`, `pypi.org` and `files.pythonhosted.org`. Another host asks you once per session; a pi without a UI (subagents, the review gate, `pi -p`) denies it. `SSH_AUTH_SOCK` is reachable on macOS, which alone does not make git over ssh work.
+- **Confirmations**: bash with `sudo`, `git … push` or a recursive `rm`, and `write`/`edit` of a file whose name starts with `.env`, ask first; with no UI they are blocked. These match the command text, so they are speed bumps, not a boundary.
+- **powershell**: pi's `powershell` tool runs outside the OS sandbox, so it is blocked while the sandbox is on; use bash.
+
+Widen the defaults in `~/.pi/agent/sandbox.json`: lists are appended, single values replace them, and filesystem entries are paths (`~` and relative to the project allowed, globs refused). A malformed file stops the sandbox from starting.
+
+```json
+{"filesystem": {"allowWrite": ["~/.npm"]}, "network": {"allowedDomains": ["example.com"]}}
+```
+
+Each writable dir you add is one bash can plant code in that runs later outside the sandbox (a tool cache such as `~/.npm` or `~/.cache` holds code), which is why none is writable by default.
+
+It fails closed: until the sandbox is up, or when it cannot start (sandbox-runtime missing from a local checkout without `npm ci`, ripgrep missing, Linux without bubblewrap or socat), bash and the checked tools are blocked with the reason and the fix; bash never falls back to running unsandboxed. `PI_SANDBOX=off pi` turns both layers off, with a warning at startup.
+
+When the project is this package's own checkout, only its `node_modules/`, `package.json`, `package-lock.json` and `.npmrc` are protected: change dependencies from your own terminal. Its source stays editable, and an edit to it runs unsandboxed on `/reload`, on restart, or at the next subagent's startup; pi warns at startup when the project holds the loaded package. For package code bash cannot change, install from git and work in a separate checkout, or add the checkout to `filesystem.denyWrite`.
+
+Not covered: commands you type with `!` or `!!`; the Claude CLI's own WebSearch and WebFetch; the pi process itself and the extensions it trusts, including a trusted project's `.pi` extensions; the poppler, pandoc and LibreOffice converters `read` runs; and a file changing between a tool's check and its use. If `sandbox.ts` itself fails to load, pi skips it and nothing is sandboxed. Run the sandbox tests (`extensions/sandbox.test.ts`) from a trusted terminal or CI: the real sandbox cannot start inside another one.
+
 ## Classifier settings
 
 The default is local Laya. The router points pi's TypeSafe Jev client at the local server, so in both modes the classifier may show up as `typesafe/jev-latest`.
@@ -255,6 +281,7 @@ prompts/                    Workflow templates for slash commands
 extensions/
   router.ts                 router/auto and Laya process management
   router.test.ts            Router tests
+  sandbox.ts                OS sandbox for bash, and the same path checks for pi's file tools
   footer.ts                 Two-line footer with the routed tier and model
   review-gate.ts            Stop-time review of each prompt's changes
   handoff.ts                Plan-first note, the handoff tool, and /handoff

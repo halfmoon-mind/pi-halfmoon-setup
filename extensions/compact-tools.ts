@@ -12,6 +12,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Container, Text } from "@earendil-works/pi-tui";
+import { sandboxedBash } from "./sandbox.ts";
 
 type RenderResult = NonNullable<ToolDefinition["renderResult"]>;
 type RenderCall = NonNullable<ToolDefinition["renderCall"]>;
@@ -124,7 +125,8 @@ export default function (pi: ExtensionAPI) {
 	for (const def of [createGrepToolDefinition(process.cwd()), createFindToolDefinition(process.cwd()), createLsToolDefinition(process.cwd())]) {
 		pi.registerTool(compact(def));
 	}
-	const bash = createBashToolDefinition(process.cwd());
+	// bash runs in sandbox.ts's OS sandbox; the call keeps the command as the model wrote it.
+	const bash = createBashToolDefinition(process.cwd(), { operations: sandboxedBash });
 	pi.registerTool({ ...bash, renderCall: shortCallWhenCollapsed(bash.renderCall!), renderResult: hideWhenCollapsed(bash.renderResult!) });
 
 	pi.on("message_update", (e) => groupCalls(e.message.role === "assistant" ? e.message.content : undefined));

@@ -22,6 +22,7 @@ jobs:
           version=$(npm view @earendil-works/pi-coding-agent version)
           npm install --prefix ~/.pi/agent/install/releases/$version @earendil-works/pi-coding-agent@$version
           echo $version > ~/.pi/agent/install/current-version
-      # pdf-read.ts reads PDFs through poppler, and office-read.ts .docx through pandoc.
-      - run: brew install poppler pandoc
+      # pdf-read.ts reads PDFs through poppler, office-read.ts .docx through pandoc, and sandbox-runtime needs ripgrep.
+      - run: brew install poppler pandoc ripgrep
+      - run: npm ci
       - run: npm test
