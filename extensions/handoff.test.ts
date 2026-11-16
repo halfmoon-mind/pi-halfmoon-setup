@@ -57,6 +57,7 @@ test("handoff stays in a clean session, and opens a new session with the plan wh
 	const stay = await tools.handoff.execute("1", { plan: "docs/plans/x.md" }, undefined, undefined, ctx);
 	assert.equal(stay.terminate, undefined);
 	assert.match(stay.content[0].text, /Continue in this session[\s\S]*1 plan step\(s\) left[\s\S]*worker subagent[\s\S]*compacted[\s\S]*fresh worker/);
+	assert.doesNotMatch(stay.content[0].text, /do it/, "the worker instruction keeps only the kickoff's first line");
 	handlers.agent_settled({ aborted: false });
 	assert.deepEqual(sent, []);
 
@@ -93,7 +94,7 @@ test("handoff stays in a clean session, and opens a new session with the plan wh
 	await commands.handoff.handler("docs/plans/x.md", cmdCtx);
 	assert.equal(parent, "/sessions/old.jsonl");
 	assert.deepEqual(newEntries, [{ customType: "handoff-plan", data: { path: "docs/plans/x.md" } }]);
-	assert.match(kicked[0], /^Implement the plan in docs\/plans\/x\.md\.[\s\S]*success criteria/);
+	assert.match(kicked[0], /^Implement the plan in docs\/plans\/x\.md\.[\s\S]*success criteria[\s\S]*The plan[\s\S]*- \[ \] 1\. do it/);
 
 	await commands.handoff.handler("docs/plans/none.md", cmdCtx);
 	assert.match(notices[0], /usage: \/handoff/);

@@ -156,7 +156,8 @@ export default function (pi: ExtensionAPI) {
 		async handler(args, ctx) {
 			const path = args.trim().replace(/^@/, "");
 			if (!path || !existsSync(resolve(ctx.cwd, path))) return ctx.ui.notify(`usage: /handoff <plan file> (no file at ${path || "?"})`, "warning");
-			const message = kickoff(path);
+			// The router classifies a session from its first message, so the plan rides along; the file stays the one to tick.
+			const message = `${kickoff(path)}\n\nThe plan as of this handoff (tick steps in the file, not here):\n\n${readFileSync(resolve(ctx.cwd, path), "utf8")}`;
 			await ctx.newSession({
 				parentSession: ctx.sessionManager.getSessionFile(),
 				setup: async (sm) => {
