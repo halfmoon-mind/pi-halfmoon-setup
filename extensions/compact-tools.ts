@@ -20,9 +20,13 @@ const LOOK = new Set(["read", "grep", "find", "ls"]);
 const COMMAND_CHARS = 100;
 const SUMMARY_CHARS = 150;
 
-/** Each call made together with other looking-around calls, mapped to its whole run. */
-const groups = new Map<string, Call[]>();
-const invalidators = new Map<string, () => void>();
+// pi loads each extension in its own module copy (jiti, moduleCache: false), so pdf-read.ts's compact()
+// would see an empty copy of these maps; keeping them process-wide lets its read join the groups.
+const shared = ((globalThis as any)[Symbol.for("pi-halfmoon-setup/compact-tools")] ??= {
+	groups: new Map<string, Call[]>(), // each call made together with other looking-around calls, mapped to its whole run
+	invalidators: new Map<string, () => void>(),
+}) as { groups: Map<string, Call[]>; invalidators: Map<string, () => void> };
+const { groups, invalidators } = shared;
 
 /** Runs of 2+ looking-around calls in an assistant message share one line; another tool breaks a run. */
 export function groupCalls(content: unknown) {

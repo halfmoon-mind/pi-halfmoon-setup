@@ -62,3 +62,14 @@ test("a collapsed bash call shows the command's first line, cut short, and how m
 	assert.equal(shortCommand("cd x; python3 - <<'EOF'\nprint(1)\nEOF\n"), "cd x; python3 - <<'EOF' … (+2 lines)");
 	assert.equal(shortCommand("a".repeat(120)), `${"a".repeat(100)}…`);
 });
+
+test("a read wrapped by another module copy (pi loads pdf-read.ts with its own) still joins the groups", async () => {
+	const other = await import("./compact-tools.ts?pdf-read-copy");
+	groupCalls([
+		{ type: "toolCall", id: "p", name: "read", arguments: { path: "a.ts" } },
+		{ type: "toolCall", id: "q", name: "ls", arguments: { path: "src" } },
+	]);
+	const tool = other.compact({ name: "read", renderCall: () => new Text("read a.ts", 0, 0), renderResult: () => new Text("", 0, 0) } as any);
+	const ctx = { toolCallId: "p", state: {}, expanded: false, isError: false, isPartial: false, outputPad: 1, invalidate: () => {} } as any;
+	assert.deepEqual(lines(tool.renderCall!({ path: "a.ts" }, theme, ctx)), ["read 1 · ls 1  a.ts, src"]);
+});
