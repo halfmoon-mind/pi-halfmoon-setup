@@ -134,6 +134,7 @@ export default function (pi: ExtensionAPI) {
 	// A resumed session's history: group its calls too.
 	pi.on("session_start", (_e, ctx) => {
 		groups.clear();
+		invalidators.clear(); // process-wide now, so a reload or new session must not keep the old UI's callbacks
 		for (const entry of ctx.sessionManager.getEntries()) {
 			if (entry.type === "message" && entry.message.role === "assistant") groupCalls(entry.message.content);
 		}
