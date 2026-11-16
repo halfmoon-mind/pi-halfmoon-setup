@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { PLAN_FIRST } from "./handoff.ts";
 import router from "./router.ts";
 
 const CATALOG = ["claude-sonnet-5-5", "claude-opus-4-5-20251101", "claude-opus-5", "claude-opus-5-5", "claude-fable-5-1"].map((id) => ({ provider: "pi-claude-cli", id }));
@@ -93,6 +94,14 @@ test("classifies the first request, then stays on the stored tier without classi
 	assert.equal(s.calls(), 1);
 	assert.equal(s.classifyingStatus(), "classifying…");
 	assert.equal(s.statuses.router, "deep 56%");
+});
+
+test("classifies the user's message, not handoff's plan-first note sent after it", async () => {
+	const s = setup(choice("deep", 0.9));
+	const plan = { role: "user", content: [{ type: "text", text: PLAN_FIRST }] };
+	await s.route(undefined, { messages: [{ role: "user", content: "fix the typo" }, plan] });
+	assert.deepEqual(s.prompts, ["fix the typo"]);
+	assert.equal(s.dataset()[0].prompt, "fix the typo");
 });
 
 test("Laya's effort score sets the thinking level until the user picks another one", async () => {
@@ -244,7 +253,7 @@ test("a process started with spawnWithLifeline does not outlive a SIGKILLed pare
 	const routerUrl = JSON.stringify(new URL("./router.ts", import.meta.url).href);
 	const parent = spawn(
 		process.execPath,
-		["--input-type=module", "-e", `import { spawnWithLifeline } from ${routerUrl};
+		["--import", new URL("./test-hooks.ts", import.meta.url).pathname, "--input-type=module", "-e", `import { spawnWithLifeline } from ${routerUrl};
 			console.log(spawnWithLifeline("sleep", ["300"], process.env).pid); setInterval(() => {}, 1e6);`],
 		{ stdio: ["ignore", "pipe", "inherit"] },
 	);

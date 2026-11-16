@@ -30,6 +30,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
+import { PLAN_FIRST } from "./handoff.ts";
 
 // Tier -> physical model. Opus is the default; deep work, and complex work Laya rates xhigh, run on Fable
 // at medium thinking; questions that change no code run on Sonnet at medium. GPT stays in subagents
@@ -90,10 +91,12 @@ interface RouterState {
 }
 
 // The latest user message: the first one for a new session, the new one when a quick session reclassifies.
+// handoff's plan-first note reaches the router as a user message after the real one; skip it.
 function latestUserText(messages: readonly Message[]): string {
-	const content = messages.findLast((message) => message.role === "user")?.content ?? "";
-	if (typeof content === "string") return content;
-	return content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+	const text = (content: Message["content"]) =>
+		typeof content === "string" ? content : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+	const texts = messages.flatMap((message) => (message.role === "user" ? [text(message.content)] : []));
+	return texts.findLast((t) => t !== PLAN_FIRST) ?? "";
 }
 
 async function classifyRequest(request: ModelRouteRequest<RouterState>, ctx: ExtensionContext): Promise<RouterState | undefined> {
