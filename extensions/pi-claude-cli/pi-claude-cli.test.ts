@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import extension, { formatRateLimits } from "./index.ts";
 
 // A stand-in `claude` on PATH that records how it was called and what reached it. $FAKE_CLAUDE lists its
@@ -174,7 +175,7 @@ test("claude waits in its MCP call for the result pi sends next, then goes on in
 
 test("a claude crash ends the turn with claude's stderr", async () => {
 	const reply = await run({ stderr: "Not logged in", exit: 1 }, [{ role: "user", content: "hi", timestamp: 1 }]);
-	assert.deepEqual(reply.content, [{ type: "text", text: "Error: Claude CLI exited with code 1: Not logged in" }]);
+	assert.deepEqual([reply.stopReason, reply.errorMessage], ["error", "Claude CLI exited with code 1: Not logged in"]);
 });
 
 test("an error claude reports mid-reply, or an exit without a result, still shows up after the partial reply", async () => {
@@ -183,10 +184,13 @@ test("an error claude reports mid-reply, or an exit without a result, still show
 	const hi = [{ role: "user", content: "hi", timestamp: 1 }];
 
 	const reported = await run({ lines: [thinking, failed] }, hi);
-	assert.deepEqual(reported.content.at(-1), { type: "text", text: "Error: API Error: 529 Overloaded" });
+	assert.deepEqual([reported.stopReason, reported.errorMessage], ["error", "API Error: 529 Overloaded"]);
+	assert.equal(reported.content.at(-1).type, "thinking", "the partial reply is kept");
+	assert.equal(isRetryableAssistantError(reported), true, "pi retries a 529");
 
 	const exited = await run({ lines: [thinking] }, hi);
-	assert.deepEqual(exited.content.at(-1), { type: "text", text: "Error: Claude CLI exited before it finished the reply" });
+	assert.deepEqual([exited.stopReason, exited.errorMessage], ["error", "Claude CLI exited before it finished the reply"]);
+	assert.equal(isRetryableAssistantError({ stopReason: "error", errorMessage: "Claude CLI subprocess timed out: no output for 180 seconds" } as any), true, "pi retries the inactivity timeout");
 });
 
 test("the subscription usage claude reports goes to the footer, with the reset time once a window is nearly used", async () => {

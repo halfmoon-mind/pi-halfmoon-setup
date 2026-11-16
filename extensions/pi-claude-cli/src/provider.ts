@@ -251,15 +251,9 @@ function runTurn(
       // The CLI's conversation no longer matches pi's; the next call starts over.
       forceKillProcess(s.proc);
       if (session === s) session = undefined;
+      // An error stop lets pi show it and auto-retry the transient ones (timeouts, 529, network).
       message = error
-        ? {
-            ...output,
-            content: [
-              ...(output.content ?? []),
-              { type: "text" as const, text: `Error: ${error}` },
-            ],
-            stopReason: "stop" as const,
-          }
+        ? { ...output, stopReason: "error" as const, errorMessage: error }
         : output;
     } else {
       s.seen = seen + 1;
