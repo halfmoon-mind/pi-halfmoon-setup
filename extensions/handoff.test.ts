@@ -80,6 +80,7 @@ test("handoff stays in a clean session, and opens a new session with the plan wh
 	assert.equal(stay.terminate, undefined);
 	assert.match(stay.content[0].text, /Continue in this session[\s\S]*1 plan step\(s\) left[\s\S]*worker subagent[\s\S]*compacted[\s\S]*fresh worker/);
 	assert.doesNotMatch(stay.content[0].text, /do it/, "the worker instruction keeps only the kickoff's first line");
+	assert.match(stay.content[0].text, /Stop before a step tagged \(parallel[\s\S]*run that group here[\s\S]*`tasks` array[\s\S]*not to edit the plan file[\s\S]*fresh worker/);
 	handlers.agent_settled({ aborted: false });
 	assert.deepEqual(sent, []);
 
@@ -117,6 +118,7 @@ test("handoff stays in a clean session, and opens a new session with the plan wh
 	assert.equal(parent, "/sessions/old.jsonl");
 	assert.deepEqual(newEntries, [{ customType: "handoff-plan", data: { path: "docs/plans/x.md" } }]);
 	assert.match(kicked[0], /^Implement the plan in docs\/plans\/x\.md\.[\s\S]*success criteria[\s\S]*The plan[\s\S]*- \[ \] 1\. do it/);
+	assert.match(kicked[0], /in order[\s\S]*\(parallel A\)[\s\S]*`tasks` array[\s\S]*not to edit the plan file[\s\S]*tick the steps that pass yourself[\s\S]*Call handoff/);
 
 	await commands.handoff.handler("docs/plans/none.md", cmdCtx);
 	assert.match(notices[0], /usage: \/handoff/);

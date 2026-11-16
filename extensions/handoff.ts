@@ -92,10 +92,14 @@ export function reviewed(branch: Entry[], path: string): boolean {
 }
 
 const KICKOFF_START = "Implement the plan in ";
+// Workers in one parallel call share the working tree and the plan file, so each edits only its step's files and the caller ticks.
+const PARALLEL =
+	"Steps tagged with the same (parallel A) letter run as one subagent call: a `tasks` array with one worker per step, each told its step and files, to edit only those files, and not to edit the plan file. When it returns, run each step's check and tick the steps that pass yourself.";
 export const kickoff = (path: string) =>
 	[
 		`${KICKOFF_START}${path}. This session starts empty, so read the plan first; it is your whole context.`,
 		"Build it yourself, step by step in order. Tick a step ([x]) in the plan file once its check passes.",
+		PARALLEL,
 		`Call handoff with ${path} between steps, so the rest moves to a fresh session if this one fills up.`,
 		"Run every command under the plan's success criteria and show its output. Do not finish while one fails.",
 	].join("\n");
@@ -105,7 +109,7 @@ export const kickoff = (path: string) =>
 export const PLAN_FIRST = [
 	"Before you edit code for this message, decide whether it needs a plan.",
 	"- A quick fix is one change you can state in one sentence with no design choice: a typo, a one-line bug, a rename, a small isolated addition. Build it directly.",
-	"- Any other code change gets a plan before you edit code, even when it fits in one or two files: several requirements, a data or file format change, a migration, or a choice between designs. Read the code (the scout subagent for wide searches), look up outside APIs or docs with web search if you have it, run the planner then plan-reviewer agents on what you found (the subagent tool; find it with tool_search if it is not listed), and write the reviewed plan to docs/plans/<short-name>.md with checkbox steps and a success criteria section of commands to run.",
+	"- Any other code change gets a plan before you edit code, even when it fits in one or two files: several requirements, a data or file format change, a migration, or a choice between designs. Read the code (the scout subagent for wide searches; scouts on separate areas run at once in one parallel subagent call), look up outside APIs or docs with web search if you have it, run the planner then plan-reviewer agents on what you found (the subagent tool; find it with tool_search if it is not listed), and write the reviewed plan to docs/plans/<short-name>.md with checkbox steps and a success criteria section of commands to run.",
 	"- If the plan touches three or more files, or changes a stored data format or a public interface, show the user a short summary and wait for their go-ahead. Otherwise go straight on.",
 	"- Then call the handoff tool with the plan file; it decides whether the build moves to a new session, and you follow what it returns.",
 	"- While building from a plan, tick each step ([x]) in the plan file once its check passes, call handoff between steps, and do not finish until every success criteria command passes; show their output.",
@@ -151,7 +155,7 @@ export default function (pi: ExtensionAPI) {
 				const text = [
 					`Continue in this session (context ${s.percent == null ? "unknown" : `${Math.round(s.percent)}%`}, ${s.toolErrors} failed tool calls, ${s.blocks} review BLOCKs; ${left} plan step(s) left).`,
 					// A worker's pi has no handoff tool, so it stops when compacted, and its next step goes to a fresh worker from here.
-					`In the session you planned in, hand the build to the worker subagent: "${kickoff(path).split("\n")[0]} Build the steps not yet ticked, in order, and tick each one ([x]) once its check passes. If your context gets compacted, finish and tick the step you are on, then stop and report the steps left. Once all are ticked, run every success criteria command and report its output." When the worker returns with steps left, call handoff again before running a fresh worker on them. In a session handoff opened, keep building yourself.`,
+					`In the session you planned in, hand the build to the worker subagent: "${kickoff(path).split("\n")[0]} Build the steps not yet ticked, in order, and tick each one ([x]) once its check passes. Stop before a step tagged (parallel ...) and report the steps left. If your context gets compacted, finish and tick the step you are on, then stop and report the steps left. Once all are ticked, run every success criteria command and report its output." When the next step not yet ticked is in a parallel group, or the worker stopped at one, run that group here. ${PARALLEL} When the worker returns with steps left, call handoff again before running a fresh worker on them. In a session handoff opened, keep building yourself.`,
 					"If this session is messy (many failed attempts, abandoned approaches, the user correcting course), call handoff again with newSession: true instead.",
 				].join("\n");
 				return { content: [{ type: "text", text }], details: s };
