@@ -2,7 +2,8 @@
  * A stop-time review gate, as the codex plugin adds to Claude Code: when the run for a prompt changed
  * the repository, the `reviewer` agent (another model family) reviews those changes before pi settles,
  * and a blocking finding goes back to the model for another pass. The model gets at most
- * MAX_REVIEWS reviews per prompt, and only interactive sessions are gated, so a subagent's own pi
+ * MAX_REVIEWS reviews per prompt, and a change past the last one is flagged as unreviewed. Work from a
+ * handoff plan is also checked against the steps the plan ticks. Only interactive sessions are gated, so a subagent's own pi
  * never reviews itself. `/review-gate on|off` switches it for every pi (saved in <agent dir>/review-gate.json).
  */
 
@@ -10,6 +11,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { activePlan, steps } from "./handoff.ts";
 import { discoverAgents } from "./subagent/agents.ts";
 import { getResultOutput, isFailedResult, runSingleAgent } from "./subagent/index.ts";
 
@@ -49,19 +51,37 @@ export default function (pi: ExtensionAPI) {
 	let base: string | undefined; // HEAD when the prompt started
 	let seen: string | undefined; // the repository at the prompt's start, then at the latest review
 	let reviews = 0;
+	// Ticked plan steps at the prompt's start and at the latest review: plans stay out of git, so a tick alone
+	// is a change the snapshot cannot see.
+	let startTicks = 0;
+	let seenTicks = 0;
+	const plan = (ctx: ExtensionContext) => {
+		const path = activePlan(ctx.sessionManager.getBranch());
+		const s = path ? steps(ctx.cwd, path) : undefined;
+		return { path, open: s?.open ?? 0, done: s?.done ?? 0 };
+	};
 
 	pi.on("before_agent_start", (_event, ctx) => {
+		startTicks = seenTicks = plan(ctx).done;
 		seen = snapshot(ctx.cwd);
 		base = seen?.split("\n", 1)[0];
 		reviews = 0;
 	});
 
 	pi.on("agent_before_settle", async (event, ctx) => {
-		if (ctx.mode !== "tui" || event.outcome !== "completed" || !base || reviews >= MAX_REVIEWS || off()) return;
+		if (ctx.mode !== "tui" || event.outcome !== "completed" || !base || off()) return;
 		const now = snapshot(ctx.cwd);
-		if (!now || now === seen) return;
+		const p = plan(ctx);
+		if (!now || (now === seen && p.done === seenTicks)) return;
 		seen = now;
+		seenTicks = p.done;
+		if (reviews >= MAX_REVIEWS) {
+			ctx.ui.notify(`review gate: this prompt used its ${MAX_REVIEWS} reviews, so its latest changes went unreviewed`, "warning");
+			return;
+		}
 		reviews++;
+		// A plan with steps left, or one this prompt ticked: a finished plan must not judge a later, unrelated request.
+		const planned = p.path && (p.open > 0 || p.done > startTicks);
 
 		const last = event.context.llmMessages.findLast((m) => m.role === "assistant");
 		const summary = last?.role === "assistant" ? last.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n") : "";
@@ -69,6 +89,7 @@ export default function (pi: ExtensionAPI) {
 			"Review the code changes made for the user's latest request, before they ship.",
 			`\`git diff ${base}\` shows every change since that request started, committed or not, plus any uncommitted changes from before it; \`git status\` lists new files.`,
 			"Your first line must be exactly `ALLOW: <short reason>` or `BLOCK: <short reason>`. BLOCK only for a Critical issue in these changes. Then give your usual review.",
+			...(planned ? [`The work follows the plan in ${p.path}. Read it, and also BLOCK when a step it ticks ([x]) is not done in the code or does not do what the step says. Steps ticked before this request may be outside the diff, so check those in the files.`] : []),
 			`Judge from the diff first. The assistant's final message, describing what it did, is for comparing at the end only:\n\n${summary}`,
 		].join("\n\n");
 

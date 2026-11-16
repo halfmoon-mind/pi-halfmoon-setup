@@ -16,6 +16,7 @@ Use the same model router, subagents, and workflow prompts on every machine. `ro
 - **Per-session routing** — keeps the main session on Opus, runs logic-heavy (`deep`) and very hard work on Fable, and sets thinking to match.
 - **Role-based subagents** — explore, plan, implement, and review in isolated contexts.
 - **Workflow commands** — chain work with `/implement`, `/scout-and-plan`, and `/implement-and-review`.
+- **Plan first, build in a clean context** — a code change bigger than a quick fix gets a reviewed plan file first, and its build moves to a new session or a worker subagent depending on how full the session is.
 - **Stop-time review gate** — another model family reviews each prompt's changes before pi stops, and sends blocking issues back.
 - **Claude CLI provider** — uses your logged-in `claude` CLI as a pi model provider.
 - **PDF reading** — `read` sends each PDF page's text, plus an image of only the pages with figures or no text.
@@ -91,6 +92,22 @@ In pi's input box, type a prompt command followed by the task.
 
 The prompts use the `subagent` tool's `chain` mode and pass each step's output to the next with `{previous}`. The tool itself supports a single agent (`agent` + `task`), parallel runs (`tasks`), and sequential runs (`chain`).
 
+### Plan first and handoff
+
+You do not need a command for this. In an interactive session, every request comes with a short note asking the model whether it needs a plan. A quick fix (one change you can state in one sentence, with no design choice) is built directly. Anything else is planned first: the model reads the code, looks up outside docs if it has web search, runs `planner` and `plan-reviewer`, and writes the plan to `docs/plans/<name>.md` with checkbox steps and success criteria commands. When the plan touches three or more files, or changes a stored data format or a public interface, pi shows a summary and waits for your go-ahead.
+
+Then the model calls the `handoff` tool, which decides where the build runs:
+
+| Session state | Build runs |
+|---|---|
+| Context 50% full or more, or compacted at least once | In a new session that starts from the plan file, with the old session as its parent |
+| Messy in the model's judgment (it sees the counts of failed tool calls and review `BLOCK`s) | In a new session, when the model asks for one |
+| Otherwise | Here, through the `worker` subagent |
+
+While building, the model ticks each step in the plan file, calls `handoff` again between steps so a session that fills up mid-build hands off the rest, and does not finish until every success criteria command passes. A worker's pi has no `handoff` tool, so a worker whose context gets compacted finishes its current step and stops; the main session calls `handoff` again and gives the steps left to a fresh worker. The review gate also checks ticked steps against the code, and since plans stay out of git, a tick alone counts as a change to review. A plan judges a request while it has steps left, or when that request ticked steps in it. `/handoff <plan>` starts a plan in a new session by hand.
+
+Plan files stay out of git: when pi starts in a repository that does not ignore `docs/plans/` already, it adds that line to `.git/info/exclude`, which is local and never committed.
+
 ## Model selection
 
 ### Router tiers
@@ -128,7 +145,7 @@ The default `agentScope: "user"` loads the package's agents and `~/.pi/agent/age
 
 ### Review gate
 
-Like the Codex plugin's stop-time review in Claude Code: when a prompt's run changed the repository, the `reviewer` agent reviews those changes before pi stops. Its first line is `ALLOW` or `BLOCK`, and a `BLOCK` goes back to the model as a message to fix the issue or explain why it is not one. Each prompt gets at most three reviews, a failed or timed-out review never blocks, and only interactive sessions are gated, so subagents never review themselves. While the gate is off, the footer shows `review off`. While a review runs, it shows `reviewing…`; Esc cannot stop it, but it times out after 10 minutes.
+Like the Codex plugin's stop-time review in Claude Code: when a prompt's run changed the repository, the `reviewer` agent reviews those changes before pi stops. Its first line is `ALLOW` or `BLOCK`, and a `BLOCK` goes back to the model as a message to fix the issue or explain why it is not one. Work from a plan is also checked against the steps the plan ticks. Each prompt gets at most three reviews, and a change after the third shows a warning that it went unreviewed. A failed or timed-out review never blocks, and only interactive sessions are gated, so subagents never review themselves. While the gate is off, the footer shows `review off`. While a review runs, it shows `reviewing…`; Esc cannot stop it, but it times out after 10 minutes.
 
 | pi command | Action |
 |---|---|
@@ -240,6 +257,7 @@ extensions/
   router.test.ts            Router tests
   footer.ts                 Two-line footer with the routed tier and model
   review-gate.ts            Stop-time review of each prompt's changes
+  handoff.ts                Plan-first note, the handoff tool, and /handoff
   pdf-read.ts               read for PDFs: page text plus images where needed
   office-read.ts            read for .docx, .xlsx and .pptx: text plus images where needed
   tab-follow-up.ts          Tab queues a follow-up while the agent runs
@@ -257,7 +275,7 @@ Run from the repository root with Node.js 22.18 or later and pi installed.
 npm test
 ```
 
-The tests cover the router's classification, fallback, model selection, and process lifetime; the subagent tool's agent loading and chain runs; the review gate's change detection and verdicts; which PDF pages `read` sends with an image, and its page ranges; how it sends Word tracked changes, Excel cells and formulas, and PowerPoint chart data, notes and pictures; and the Claude CLI provider's system prompt handoff, tool calls, and CLI error handling. pi's packages load from the installed pi (`~/.pi/agent/install`), and fake processes stand in for `pi` and `claude`. Real provider authentication and full workflow runs need to be checked separately.
+The tests cover the router's classification, fallback, model selection, and process lifetime; the subagent tool's agent loading and chain runs; the review gate's change detection, verdicts, and plan checks; the handoff's session signals, its stay-or-leave decision and new session, and keeping plan files out of git; which PDF pages `read` sends with an image, and its page ranges; how it sends Word tracked changes, Excel cells and formulas, and PowerPoint chart data, notes and pictures; and the Claude CLI provider's system prompt handoff, tool calls, and CLI error handling. pi's packages load from the installed pi (`~/.pi/agent/install`), and fake processes stand in for `pi` and `claude`. Real provider authentication and full workflow runs need to be checked separately.
 
 GitHub Actions runs the same tests on every push and PR, and weekly against the newest pi from npm, so a pi update that breaks this package shows up right away.
 

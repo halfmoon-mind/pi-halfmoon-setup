@@ -19,10 +19,10 @@ Output format:
 One sentence summary of what needs to be done.
 
 ## Plan
-Numbered steps, each small and actionable:
-1. Step one - specific file/function to modify
-2. Step two - what to add/change
-3. ...
+Numbered steps, each small and actionable, as checkboxes the implementer ticks when the step's check passes:
+- [ ] 1. Step one - specific file/function to modify
+- [ ] 2. Step two - what to add/change
+- [ ] 3. ...
 
 ## Files to Modify
 - `path/to/file.ts` - what changes

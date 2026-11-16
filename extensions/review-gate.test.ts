@@ -1,7 +1,7 @@
 // Run: node --import ./extensions/test-hooks.ts --test extensions/review-gate.test.ts
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -36,7 +36,8 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	const notices: string[] = [];
 	const statuses: Record<string, string | undefined> = {};
 	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), notify: (msg: string) => notices.push(msg) };
-	const ctx = { mode: "tui", cwd: repo, ui };
+	const branch: any[] = [];
+	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => branch } };
 	const assistant = { role: "assistant", content: [{ type: "text", text: "Bumped a.txt to 2." }] };
 	const settle = (mode = "tui") => handlers.agent_before_settle({ entries: [], outcome: "completed", context: { llmMessages: [assistant] } }, { ...ctx, mode });
 	const reviewCount = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n---\n").length - 1 : 0);
@@ -60,6 +61,44 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	assert.deepEqual(notices, ["review: fixed"]);
 	assert.equal(reviewCount(), 2);
 	assert.deepEqual(logged.map((entry) => [entry.customType, entry.verdict, typeof entry.usage.cost]), [["review-gate", "BLOCK: off by one", "number"], ["review-gate", "ALLOW: fixed", "number"]]);
+	assert.doesNotMatch(readFileSync(log, "utf8"), /follows the plan/);
+
+	// Work from a handoff plan is also checked against the steps the plan ticks.
+	branch.push({ type: "custom", customType: "handoff-plan", data: { path: "docs/plans/bump.md" } });
+	mkdirSync(join(repo, "docs/plans"), { recursive: true });
+	writeFileSync(join(repo, "docs/plans/bump.md"), "- [x] 1. bump a.txt\n");
+	writeFileSync(join(repo, "a.txt"), "5\n");
+	assert.equal(await settle(), undefined);
+	assert.match(readFileSync(log, "utf8").split("\n---\n").at(-2)!, /follows the plan in docs\/plans\/bump\.md/);
+
+	// A plan finished before this prompt does not judge it.
+	const lastTask = () => readFileSync(log, "utf8").split("\n---\n").at(-2)!;
+	handlers.before_agent_start({}, ctx);
+	writeFileSync(join(repo, "a.txt"), "7\n");
+	assert.equal(await settle(), undefined);
+	assert.doesNotMatch(lastTask(), /follows the plan/);
+
+	// Plans stay out of git, so a tick alone is a change, and it is reviewed against the plan.
+	writeFileSync(join(repo, "docs/plans/bump.md"), "- [x] 1. bump a.txt\n- [x] 2. bump again\n");
+	assert.equal(await settle(), undefined);
+	assert.equal(reviewCount(), 5);
+	assert.match(lastTask(), /follows the plan/);
+	writeFileSync(join(repo, "docs/plans/bump.md"), "- [x] 1. bump a.txt\n- [x] 2. bump again\n- [ ] 3. once more\n");
+	writeFileSync(join(repo, "a.txt"), "8\n");
+	assert.equal(await settle(), undefined);
+
+	// Past the last review, a change is not reviewed, and says so.
+	writeFileSync(join(repo, "a.txt"), "6\n");
+	assert.equal(await settle(), undefined);
+	assert.equal(reviewCount(), 6);
+	assert.match(notices.at(-1)!, /latest changes went unreviewed/);
+
+	// A plan with steps left judges a resumed prompt that ticks nothing.
+	handlers.before_agent_start({}, ctx);
+	writeFileSync(join(repo, "a.txt"), "9\n");
+	assert.equal(await settle(), undefined);
+	assert.equal(reviewCount(), 7);
+	assert.match(lastTask(), /follows the plan/);
 
 	// Off is the state that shows, in the footer of every pi it applies to.
 	await commands["review-gate"].handler("off", ctx);
@@ -70,5 +109,5 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	assert.equal(statuses.review, "review off");
 	await commands["review-gate"].handler("on", ctx);
 	assert.equal(statuses.review, undefined);
-	assert.equal(reviewCount(), 2);
+	assert.equal(reviewCount(), 7);
 });
