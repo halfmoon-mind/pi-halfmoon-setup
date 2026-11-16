@@ -77,6 +77,20 @@ export function activePlan(branch: Entry[]): string | undefined {
 	return branch.findLast((e) => e.type === "custom" && e.customType === PLAN_ENTRY)?.data?.path;
 }
 
+/** A plan reviewed by plan-reviewer in this session, or one this session already builds from (accepted earlier, or opened by /handoff). */
+export function reviewed(branch: Entry[], path: string): boolean {
+	return branch.some(
+		(e) =>
+			(e.type === "custom" && e.customType === PLAN_ENTRY && e.data?.path === path) ||
+			(e.type === "message" &&
+				e.message?.role === "toolResult" &&
+				e.message.toolName === "subagent" &&
+				(e.message.details?.results ?? []).some(
+					(r: any) => r.agent === "plan-reviewer" && r.exitCode === 0 && r.stopReason !== "error" && r.stopReason !== "aborted",
+				)),
+	);
+}
+
 const KICKOFF_START = "Implement the plan in ";
 export const kickoff = (path: string) =>
 	[
@@ -123,6 +137,7 @@ export default function (pi: ExtensionAPI) {
 			async execute(_id, params, _signal, _onUpdate, ctx: ExtensionContext) {
 				const path = params.plan.replace(/^@/, "");
 				if (!existsSync(resolve(ctx.cwd, path))) throw new Error(`no plan file at ${path}; write the plan there first`);
+				if (!reviewed(ctx.sessionManager.getBranch() as Entry[], path)) throw new Error(`${path} was not reviewed: run the plan-reviewer subagent on it, write the reviewed plan to ${path}, then call handoff again`);
 				pi.appendEntry(PLAN_ENTRY, { path });
 
 				const s = signals(ctx.sessionManager.getBranch() as Entry[], ctx.getContextUsage()?.percent);

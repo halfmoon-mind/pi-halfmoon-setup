@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import handoff, { activePlan, forcedReason, ignorePlans, signals, steps } from "./handoff.ts";
+import handoff, { activePlan, forcedReason, ignorePlans, reviewed, signals, steps } from "./handoff.ts";
 
 test("signals count compactions, failed tool calls and review BLOCKs; a full or compacted session must hand off", () => {
 	const branch = [
@@ -20,6 +20,24 @@ test("signals count compactions, failed tool calls and review BLOCKs; a full or 
 	assert.match(forcedReason(signals(branch, 50))!, /50% full/);
 	assert.match(forcedReason(signals([...branch, { type: "compaction" }], null))!, /compacted 1/);
 	assert.equal(activePlan([{ type: "custom", customType: "handoff-plan", data: { path: "a.md" } }, { type: "custom", customType: "handoff-plan", data: { path: "b.md" } }]), "b.md");
+});
+
+test("reviewed needs a successful plan-reviewer run, or a plan this session already has", () => {
+	const run = (results: any, toolName = "subagent") => [{ type: "message", message: { role: "toolResult", toolName, isError: false, details: results === undefined ? {} : { results } } }];
+	const ok = { agent: "plan-reviewer", exitCode: 0, stopReason: "stop" };
+	const p = "docs/plans/x.md";
+	assert.equal(reviewed(run([ok]), p), true);
+	assert.equal(reviewed(run([{ agent: "planner", exitCode: 1, stopReason: "error" }, ok]), p), true, "beside a failed planner in a parallel batch");
+	assert.equal(reviewed(run(undefined), p), false, "no results");
+	assert.equal(reviewed(run([]), p), false, "empty results");
+	assert.equal(reviewed(run([{ agent: "planner", exitCode: 0, stopReason: "stop" }]), p), false, "only a planner");
+	assert.equal(reviewed(run([{ ...ok, exitCode: 1 }]), p), false, "exit code 1");
+	assert.equal(reviewed(run([{ ...ok, stopReason: "error" }]), p), false, "stopReason error");
+	assert.equal(reviewed(run([{ ...ok, stopReason: "aborted" }]), p), false, "stopReason aborted");
+	assert.equal(reviewed(run([ok], "bash"), p), false, "another tool");
+	const accepted = [{ type: "custom", customType: "handoff-plan", data: { path: p } }];
+	assert.equal(reviewed(accepted, p), true);
+	assert.equal(reviewed(accepted, "docs/plans/y.md"), false);
 });
 
 test("handoff stays in a clean session, and opens a new session with the plan when the context is full", async () => {
@@ -51,8 +69,12 @@ test("handoff stays in a clean session, and opens a new session with the plan wh
 	assert.equal(ask("tui", "", "custom"), undefined, "nor a review-gate continuation");
 
 	let percent = 10;
-	const ctx = { cwd, sessionManager: { getBranch: () => [] }, getContextUsage: () => ({ percent }) };
+	let branch: any[] = [];
+	const ctx = { cwd, sessionManager: { getBranch: () => branch }, getContextUsage: () => ({ percent }) };
 	await assert.rejects(tools.handoff.execute("1", { plan: "docs/plans/none.md" }, undefined, undefined, ctx), /no plan file/);
+	await assert.rejects(tools.handoff.execute("1", { plan: "docs/plans/x.md" }, undefined, undefined, ctx), /plan-reviewer/);
+	assert.equal(entries.length, 0);
+	branch = [{ type: "message", message: { role: "toolResult", toolCallId: "r1", toolName: "subagent", isError: false, details: { results: [{ agent: "plan-reviewer", exitCode: 0, stopReason: "stop" }] } } }];
 
 	const stay = await tools.handoff.execute("1", { plan: "docs/plans/x.md" }, undefined, undefined, ctx);
 	assert.equal(stay.terminate, undefined);

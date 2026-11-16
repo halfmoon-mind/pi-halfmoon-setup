@@ -94,7 +94,7 @@ The prompts use the `subagent` tool's `chain` mode and pass each step's output t
 
 ### Plan first and handoff
 
-You do not need a command for this. In an interactive session, every request comes with a short note asking the model whether it needs a plan. A quick fix (one change you can state in one sentence, with no design choice) is built directly. Anything else is planned first: the model reads the code, looks up outside docs if it has web search, runs `planner` and `plan-reviewer`, and writes the plan to `docs/plans/<name>.md` with checkbox steps and success criteria commands. When the plan touches three or more files, or changes a stored data format or a public interface, pi shows a summary and waits for your go-ahead.
+You do not need a command for this. In an interactive session, every request comes with a short note asking the model whether it needs a plan. A quick fix (one change you can state in one sentence, with no design choice) is built directly. Anything else is planned first: the model reads the code, looks up outside docs if it has web search, runs `planner` and `plan-reviewer`, and writes the plan to `docs/plans/<name>.md` with checkbox steps and success criteria commands. The `handoff` tool refuses a plan until `plan-reviewer` has run in the session; a plan this session already accepted, or one opened by `/handoff`, is exempt. When the plan touches three or more files, or changes a stored data format or a public interface, pi shows a summary and waits for your go-ahead.
 
 Then the model calls the `handoff` tool, which decides where the build runs:
 
