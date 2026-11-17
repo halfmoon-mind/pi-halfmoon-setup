@@ -18,6 +18,7 @@ Use the same model router, subagents, and workflow prompts on every machine. `ro
 - **Workflow commands** — chain work with `/implement`, `/scout-and-plan`, and `/implement-and-review`.
 - **Plan first, build in a clean context** — a code change bigger than a quick fix gets a reviewed plan file first, and its build moves to a new session or a worker subagent depending on how full the session is.
 - **Stop-time review gate** — another model family reviews each prompt's changes before pi stops, and sends blocking issues back.
+- **Prompt timing** — the footer ticks the elapsed time while a prompt runs, and one line after it gives the total, the agent time, and the slowest tools.
 - **Claude CLI provider** — uses your logged-in `claude` CLI as a pi model provider.
 - **PDF reading** — `read` sends each PDF page's text, plus an image of only the pages with figures or no text.
 - **Office file reading** — `read` sends Word, Excel and PowerPoint files as text with tracked changes, comments, formulas, chart data and speaker notes, plus an image of only the slides that need one.
@@ -154,6 +155,20 @@ Like the Codex plugin's stop-time review in Claude Code: when a prompt's run cha
 | `/review-gate` | Show whether the gate is on |
 | `/review-gate on` | Turn the gate on (the default) |
 | `/review-gate off` | Turn the gate off for every pi that shares this config directory |
+
+### Timing
+
+While a prompt runs, the footer shows `⏱ 42s · agent 30s · bash 12s`, updated every second: the total so far, the agent time so far, and the top-level tool that has been running longest, while one runs. After the prompt settles, one dim line in the chat sums it up:
+
+```text
+⏱ total 1m 23s · agent 58s · bash 41s ×12, subagent 30s ×2, read 2.0s ×5
+```
+
+- **total** — wall time from the prompt's start until pi settles, including the review gate, retries and continuations.
+- **agent** — the time the agent ran (model and tools), leaving out the review gate and other settle work.
+- **tools** — the top three tools by time, with how many calls each made. Calls made by another tool (a codemode script's) are not counted again, and parallel calls overlap, so tool times can add up to more than the total.
+
+An aborted prompt's line ends in `(aborted)`. While a confirm or select prompt waits for you, the total, agent and live tool times keep counting; the summary's tool times do not. Only interactive (tui) sessions are timed, so subagents and print/json mode show nothing. The line is not saved in the session.
 
 ### PDF reading
 
@@ -296,6 +311,7 @@ extensions/
   pdf-read.ts               read for PDFs: page text plus images where needed
   office-read.ts            read for .docx, .xlsx and .pptx: text plus images where needed
   tab-follow-up.ts          Tab queues a follow-up while the agent runs
+  timing.ts                 Live prompt timer in the footer and a timing line after each prompt
   test-hooks.ts             Loads pi's packages in tests the way pi does
   subagent/                 Subagent runs and agent discovery
   pi-claude-cli/            Claude CLI provider
