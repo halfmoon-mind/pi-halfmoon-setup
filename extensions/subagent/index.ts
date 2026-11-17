@@ -723,7 +723,8 @@ export default function (pi: ExtensionAPI) {
 			};
 		},
 
-		renderCall(args, theme, _context) {
+		renderCall(args, theme, context) {
+			// Collapsed, the user sees which agents run; the task text is for the agent, ctrl+o shows it.
 			const scope: AgentScope = args.agentScope ?? "user";
 			if (args.chain && args.chain.length > 0) {
 				let text =
@@ -740,7 +741,7 @@ export default function (pi: ExtensionAPI) {
 						theme.fg("muted", `${i + 1}.`) +
 						" " +
 						theme.fg("accent", step.agent) +
-						theme.fg("dim", ` ${preview}`);
+						(context.expanded ? theme.fg("dim", ` ${preview}`) : "");
 				}
 				if (args.chain.length > 3) text += `\n  ${theme.fg("muted", `... +${args.chain.length - 3} more`)}`;
 				return new Text(text, 0, 0);
@@ -752,7 +753,7 @@ export default function (pi: ExtensionAPI) {
 					theme.fg("muted", ` [${scope}]`);
 				for (const t of args.tasks.slice(0, 3)) {
 					const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
-					text += `\n  ${theme.fg("accent", t.agent)}${theme.fg("dim", ` ${preview}`)}`;
+					text += `\n  ${theme.fg("accent", t.agent)}${context.expanded ? theme.fg("dim", ` ${preview}`) : ""}`;
 				}
 				if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
 				return new Text(text, 0, 0);
@@ -763,7 +764,7 @@ export default function (pi: ExtensionAPI) {
 				theme.fg("toolTitle", theme.bold("subagent ")) +
 				theme.fg("accent", agentName) +
 				theme.fg("muted", ` [${scope}]`);
-			text += `\n  ${theme.fg("dim", preview)}`;
+			if (context.expanded) text += `\n  ${theme.fg("dim", preview)}`;
 			return new Text(text, 0, 0);
 		},
 

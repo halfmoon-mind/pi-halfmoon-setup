@@ -81,6 +81,9 @@ test("handoff stays in a clean session, and opens a new session with the plan wh
 	assert.match(stay.content[0].text, /Continue in this session[\s\S]*1 plan step\(s\) left[\s\S]*worker subagent[\s\S]*compacted[\s\S]*fresh worker/);
 	assert.doesNotMatch(stay.content[0].text, /do it/, "the worker instruction keeps only the kickoff's first line");
 	assert.match(stay.content[0].text, /Stop before a step tagged \(parallel[\s\S]*run that group here[\s\S]*`tasks` array[\s\S]*not to edit the plan file[\s\S]*fresh worker/);
+	const shown = (expanded: boolean, isError = false) => tools.handoff.renderResult(stay, { expanded }, { fg: (_c: string, t: string) => t }, { isError }).render(400).join("\n").trim();
+	assert.match(shown(false), /^Continue in this session[^\n]*left\)\.$/, "collapsed, the user sees only the verdict line");
+	assert.match(shown(true), /worker subagent/, "ctrl+o shows the model's instructions");
 	handlers.agent_settled({ aborted: false });
 	assert.deepEqual(sent, []);
 

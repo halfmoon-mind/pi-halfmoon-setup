@@ -69,3 +69,17 @@ test("a chain runs each agent on its own model and hands the previous step's out
 	assert.match(calls[0].prompt, /You are a scout/);
 	assert.equal(result.content[0].text, "answer to Task: plan from answer to Task: find the router");
 });
+
+test("collapsed, a subagent call shows which agents run, not their task text; ctrl+o shows it", () => {
+	let tool: any;
+	subagent({ registerTool: (def: any) => (tool = def) } as any);
+	const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+	const shown = (args: any, expanded: boolean) => tool.renderCall(args, theme, { expanded }).render(400).join("\n").trim();
+	const single = { agent: "worker", task: "Implement the plan in docs/plans/x.md" };
+	assert.equal(shown(single, false), "subagent worker [user]");
+	assert.match(shown(single, true), /Implement the plan/);
+	const parallel = { tasks: [{ agent: "scout", task: "look at the router" }, { agent: "worker", task: "build step 2" }] };
+	assert.doesNotMatch(shown(parallel, false), /router|step 2/);
+	assert.match(shown(parallel, false), /scout[\s\S]*worker/);
+	assert.match(shown({ chain: [{ agent: "planner", task: "plan it" }] }, true), /plan it/);
+});

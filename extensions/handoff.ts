@@ -11,6 +11,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 export const FULL_PERCENT = 50;
@@ -159,6 +160,12 @@ export default function (pi: ExtensionAPI) {
 					"If this session is messy (many failed attempts, abandoned approaches, the user correcting course), call handoff again with newSession: true instead.",
 				].join("\n");
 				return { content: [{ type: "text", text }], details: s };
+			},
+			// The rest is instructions for the model; the user sees the verdict line, ctrl+o shows all, errors show whole.
+			renderResult(result, { expanded }, theme, ctx) {
+				const block = result.content[0];
+				const text = block?.type === "text" ? block.text : "";
+				return new Text(theme.fg("toolOutput", expanded || ctx.isError ? text : text.split("\n")[0]!), 0, 0);
 			},
 		});
 	});
