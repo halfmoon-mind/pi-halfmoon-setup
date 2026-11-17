@@ -131,7 +131,9 @@ export default function (pi: ExtensionAPI) {
 			if (path && !accepted(ctx.sessionManager.getBranch() as Entry[], path)) pi.appendEntry(PLAN_ENTRY, { path });
 			return;
 		}
-		return { message: { customType: "plan-first", content: PLAN_FIRST, display: false } };
+		// Under the eval no one answers, so a run that waited for a go-ahead would end with nothing built.
+		const content = process.env.PI_EVAL === "1" ? PLAN_FIRST.replace(/show the user a short summary and wait for their go-ahead/, "no one is there to approve it, so write the summary in your final reply and go straight on") : PLAN_FIRST;
+		return { message: { customType: "plan-first", content, display: false } };
 	});
 
 	pi.on("session_start", (_event, ctx) => {
@@ -143,6 +145,8 @@ export default function (pi: ExtensionAPI) {
 			description:
 				"Call with a plan file before building it, and between its steps. Moves the build to a new session when this one is full or compacted, or when you pass newSession; otherwise says to continue here.",
 			promptSnippet: "Decide whether a plan's build runs in this session or a new one",
+			// Models often write or tick the plan and call handoff in one batch; run in order, so it reads the file as written.
+			executionMode: "sequential",
 			parameters: Type.Object({
 				plan: Type.String({ description: "Plan file path, e.g. docs/plans/theme-option.md" }),
 				newSession: Type.Optional(

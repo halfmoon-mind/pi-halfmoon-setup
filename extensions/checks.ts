@@ -46,7 +46,7 @@ export function parsePlan(text: string): { steps: Step[]; criteria: string[] } {
 export function lintPlan(cwd: string, text: string): string[] {
 	const { steps, criteria } = parsePlan(text);
 	const problems: string[] = [];
-	if (!steps.length) problems.push("no steps");
+	if (!steps.length) problems.push("no steps: each step is one line like `- [ ] 1. <what> - files: a.ts - check: `<command>``");
 	for (const s of steps) {
 		if (!s.check) problems.push(`step ${s.n} has no check`);
 		if (!s.files.length) problems.push(`step ${s.n} lists no files`);

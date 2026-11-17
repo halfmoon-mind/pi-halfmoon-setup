@@ -165,9 +165,13 @@ test("handoff refuses a malformed plan it has not accepted; under PI_EVAL=1 prin
 		assert.equal(ask("json", "add a theme option"), undefined, "json stays ungated, even under the eval");
 		handlers.session_start({}, { mode: "json", cwd });
 		assert.equal(tools.handoff, undefined);
-		assert.match(ask("print", "add a theme option").message.content, /^Before you edit code[\s\S]*- files: a\.ts, b\.ts \(new\) - check:/);
+		const note = ask("print", "add a theme option").message.content;
+		assert.match(note, /^Before you edit code[\s\S]*- files: a\.ts, b\.ts \(new\) - check:/);
+		assert.match(note, /no one is there to approve it/, "no run waits for a go-ahead no one gives");
+		assert.doesNotMatch(note, /wait for their go-ahead/);
 		handlers.session_start({}, { mode: "print", cwd });
 		assert.ok(tools.handoff);
+		assert.equal(tools.handoff.executionMode, "sequential", "a write in the same batch lands before handoff reads the plan");
 		assert.equal(ask("print", "Implement the plan in docs/plans/x.md. This session starts empty"), undefined);
 		ask("print", "Implement the plan in docs/plans/x.md.");
 		assert.deepEqual(plans(), ["docs/plans/x.md"], "a kickoff records its plan once");

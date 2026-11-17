@@ -37,7 +37,8 @@ test("lintPlan names each problem, and passes a clean plan", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "checks-"));
 	writeFileSync(join(cwd, "a.ts"), "");
 	mkdirSync(join(cwd, "src"));
-	assert.deepEqual(lintPlan(cwd, ""), ["no steps", "no success criteria commands"]);
+	assert.deepEqual(lintPlan(cwd, "").map((p) => p.split(":")[0]), ["no steps", "no success criteria commands"]);
+	assert.match(lintPlan(cwd, "")[0], /- \[ \] 1\. <what> - files: a\.ts - check:/, "names the line format a weak model missed");
 	assert.deepEqual(lintPlan(cwd, PLAN), ["step 2: c.ts does not exist (mark a new file `c.ts (new)`)", "step 3 has no check", "step 3 lists no files"]);
 	const clean = "- [ ] 1. a - files: a.ts, src, src/, b.ts (new), bench/agent/tasks/ (new) - check: `true`\n## Success criteria\n- `true`\n";
 	assert.deepEqual(lintPlan(cwd, clean), []);
