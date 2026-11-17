@@ -163,6 +163,9 @@ test("file tools follow the path policy: project and temp writes, credential rea
 			assert.match(may("write", { path: p })!, /write-protected/, p);
 		}
 		assert.equal(may("write", { path: ".git/HEAD" }), undefined);
+		for (const p of [".git/commondir", ".git/config.worktree", ".git/modules/m/config", ".git/worktrees/w/gitdir"]) {
+			assert.match(may("write", { path: p })!, /write-protected/, p);
+		}
 		assert.match(may("write", { path: join(s.agentDir, "settings.json") })!, /write-protected/, "the agent dir, though it is in a temp dir");
 		// Reads: credential paths, with SSH's config and known_hosts open.
 		for (const p of ["~/.ssh/id_ed25519", "~/.aws/credentials", "~/.config/gh/hosts.yml", "~/.netrc", join(s.agentDir, "auth.json"), "@~/.ssh/id_rsa"]) {
@@ -505,11 +508,20 @@ test("macOS: a real subagent pi in a repo's subdir cannot write the repo's .git/
 		assert.equal(fromSub["echo x > mine.txt"], 0);
 		for (const [c, code] of Object.entries(fromSub).slice(1)) assert.notEqual(code, 0, c);
 		// At the repo itself the runtime's own protections hold, while the rest is writable.
-		const fromRepo = await child(repo, ["echo x > top.txt", "echo x >> .git/config", "echo x > .git/hooks/pre-commit"]);
+		const fromRepo = await child(repo, [
+			"echo x > top.txt",
+			"echo x >> .git/config",
+			"echo x > .git/hooks/pre-commit",
+			"echo /tmp/evil > .git/commondir",
+			"echo x > .git/config.worktree",
+			"mkdir -p .git/modules/m && echo x > .git/modules/m/config",
+			"mkdir -p .git/worktrees/w && echo /tmp/evil > .git/worktrees/w/gitdir",
+		]);
 		assert.equal(fromRepo["echo x > top.txt"], 0);
 		for (const [c, code] of Object.entries(fromRepo).slice(1)) assert.notEqual(code, 0, c);
 		assert.equal(readFileSync(join(repo, ".git/config"), "utf8"), "orig");
 		assert.equal(existsSync(join(repo, ".git/hooks/pre-commit")), false);
+		for (const p of [".git/commondir", ".git/config.worktree", ".git/modules", ".git/worktrees"]) assert.equal(existsSync(join(repo, p)), false, p);
 		// Started inside a protected dir, the runtime's cwd-relative names miss the real files: nothing there is writable.
 		mkdirSync(join(repo, ".claude/commands"), { recursive: true });
 		mkdirSync(join(repo, ".vscode"));
