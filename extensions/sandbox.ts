@@ -7,7 +7,7 @@
 // A blocked bash command is rated by openai/gpt-6.1-terra: low re-runs unsandboxed, high asks (no UI: denied); PI_SANDBOX_ESCALATE=off.
 // Not covered: this file itself failing to load, trusted extensions, user-typed !commands.
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -33,9 +33,13 @@ const MANDATORY = /\/(\.gitconfig|\.gitmodules|\.bashrc|\.bash_profile|\.zshrc|\
 // ponytail: the project's own .git only; a new `sub/.git` file pointing elsewhere is still writable (option B, not taken).
 const GIT_REDIRECTS = ["commondir", "config.worktree", "modules", "worktrees"];
 // On Linux the runtime denies an absent path by mounting /dev/null there, and git dies on an empty commondir
-// ("failed to read .git/commondir"), so an absent one is not denied there but removed after each sandboxed run.
-// ponytail: a background process the command left running can create it after that check; deny it some other way if that matters.
-const sweptOnLinux = (p: string) => seam.platform() === "linux" && basename(p) === "commondir" && !lstatSync(p, { throwIfNoEntry: false });
+// ("failed to read .git/commondir"). So there a repo gets a real one first, naming its own dir ("."), which git
+// reads as no redirect at all; the runtime then binds that file read-only for every command.
+function ownCommondir(root: string) {
+	const git = join(root, ".git");
+	if (seam.platform() !== "linux" || !lstatSync(git, { throwIfNoEntry: false })?.isDirectory()) return;
+	if (!lstatSync(join(git, "commondir"), { throwIfNoEntry: false })) writeFileSync(join(git, "commondir"), ".\n", { flag: "wx" });
+}
 // The first component of every protected dir above. The runtime spells those relative to its cwd, so a cwd at or
 // under one (`.git`, where `config` and `hooks` are) would leave the real ones unprotected.
 const PROTECTED_CWD = /\/(\.git|\.claude|\.vscode|\.idea)(\/|$)/i;
@@ -67,7 +71,6 @@ let off = false;
 let ui: ExtensionUIContext | undefined;
 let session: ExtensionContext | undefined;
 let declinedAt = 0; // when a UI last said no to a network host
-let commondir: string | undefined; // Linux: the project's absent .git/commondir, removed if a sandboxed run creates it
 let config: Policy | undefined;
 let runtime: Runtime | undefined;
 let ready: Promise<void> | undefined; // undefined: startup never ran, or the session shut down
@@ -145,7 +148,7 @@ export function policy(root: string | undefined): Policy {
 				agent,
 				...[".npm/_logs", ".claude/debug"].map((p) => real(join(home, p))),
 				...["node_modules", "package.json", "package-lock.json", ".npmrc"].map((n) => join(PKG, n)),
-				...(root ? GIT_REDIRECTS.map((n) => join(real(root), ".git", n)).filter((p) => !sweptOnLinux(p)) : []),
+				...(root ? GIT_REDIRECTS.map((n) => join(real(root), ".git", n)) : []),
 			],
 			denyRead: [...[".ssh", ".aws", ".gnupg", ".netrc", ".config/gh"].map((p) => real(join(home, p))), join(agent, "auth.json")],
 			allowRead: [real(join(home, ".ssh/known_hosts")), real(join(home, ".ssh/config"))],
@@ -299,10 +302,6 @@ const run: BashOperations["exec"] = async (command, cwd, options) => {
 		first = await local.exec(wrapped, cwd, { ...options, onData: (d) => (found.feed(d), options.onData(d)) });
 	} finally {
 		runtime?.SandboxManager.cleanupAfterCommand();
-		if (commondir && lstatSync(commondir, { throwIfNoEntry: false })) {
-			rmSync(commondir, { recursive: true, force: true });
-			options.onData(Buffer.from("\n[sandbox: removed .git/commondir, which this command created: it can point git at a config outside the project]\n"));
-		}
 	}
 	found.end();
 	return escalate(command, cwd, options, first, id, since, found.lines);
@@ -336,7 +335,7 @@ async function escalate(command: string, cwd: string, options: Options, first: {
 	} else if (!ui) {
 		say(`risk high (${v.reason}): needs the user's approval to run outside the sandbox; ask the user`);
 		return first;
-	} else if (!(await ui.confirm("Sandbox: run outside the sandbox?", `${command}\nblocked: ${denials.slice(0, 5).join("\n")}\n(sandboxed bash writes only in ${config!.filesystem.allowWrite.join(", ")}, not their .git/config, .git/hooks, .git/worktrees and the like, and reaches only allowed hosts)\nrisk high: ${r ? `${r}, a fixed rule that always asks (no classifier)` : v.reason}\nRun it again with no sandbox?`).catch(() => false))) {
+	} else if (!(await ui.confirm("Sandbox: run outside the sandbox?", `${command}\nblocked: ${denials.slice(0, 5).join("\n")}\n(sandboxed bash writes only in ${config!.filesystem.allowWrite.join(", ")}, not the project's .git/config, .git/hooks, .git/worktrees and the like, and reaches only allowed hosts)\nrisk high: ${r ? `${r}, a fixed rule that always asks (no classifier)` : v.reason}\nRun it again with no sandbox?`).catch(() => false))) {
 		say(`risk high (${v.reason}); the user declined running it outside the sandbox`);
 		return first;
 	} else say(`risk high (${v.reason}), approved by the user → re-ran outside the sandbox`);
@@ -403,8 +402,7 @@ export default function (pi: ExtensionAPI) {
 			const parsed = runtime.SandboxRuntimeConfigSchema.safeParse(merged);
 			if (!parsed.success) throw new Error(`invalid sandbox policy: ${parsed.error.message}`);
 			config = merged;
-			const cd = root && join(real(root), ".git", "commondir");
-			commondir = cd && sweptOnLinux(cd) ? cd : undefined;
+			if (root) ownCommondir(root); // before any command runs, so there is no moment the redirect is writable
 			await runtime.SandboxManager.initialize(parsed.data as SandboxRuntimeConfig, ask);
 			if (ui && root && within(root, PKG)) {
 				ui.notify(`sandbox: this project holds the loaded pi package (${PKG}); edits to its code run unsandboxed on /reload, restart or the next subagent startup`, "warning");

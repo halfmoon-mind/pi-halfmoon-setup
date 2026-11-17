@@ -483,9 +483,6 @@ test("macOS: loaded by pi's own extension loader, the registered bash runs sandb
 test("macOS: a real subagent pi in a repo's subdir cannot write the repo's .git/config or hooks, nor any of the repo outside its cwd", macOS, async () => {
 	const repo = join(PKG, unique(".sandbox-repo")); // outside every temp dir, which stay writable
 	const sub = join(repo, "packages/app");
-	mkdirSync(join(repo, ".git/hooks"), { recursive: true });
-	mkdirSync(sub, { recursive: true });
-	writeFileSync(join(repo, ".git/config"), "orig");
 	const script = join(tmp("sandbox-child-"), "child.mjs");
 	writeFileSync(script, `
 		const { default: sandbox, sandboxedBash } = await import(${JSON.stringify(join(PKG, "extensions/sandbox.ts"))});
@@ -506,6 +503,10 @@ test("macOS: a real subagent pi in a repo's subdir cannot write the repo's .git/
 			);
 		});
 	try {
+		mkdirSync(join(repo, ".git/hooks"), { recursive: true });
+		mkdirSync(sub, { recursive: true });
+		writeFileSync(join(repo, ".git/config"), "orig");
+		// Setup inside try: in a sandboxed pi the .git/config write fails, and the repo must still be removed.
 		const fromSub = await child(sub, ["echo x > mine.txt", "echo x >> ../../.git/config", "echo x > ../../.git/hooks/pre-commit", "echo x > ../../top.txt"]);
 		assert.equal(fromSub["echo x > mine.txt"], 0);
 		for (const [c, code] of Object.entries(fromSub).slice(1)) assert.notEqual(code, 0, c);
@@ -617,7 +618,7 @@ test("escalation: high with a UI asks; yes re-runs, no or a rejected dialog does
 		const yes = await s.run(F);
 		assert.equal(yes.exitCode, 3);
 		assert.match(yes.out, /approved by the user → re-ran outside the sandbox\]\noutside\n/);
-		assert.match(u.confirms[0]!, /blocked: x: Operation not permitted\n\(sandboxed bash writes only in \/.*sandbox-project-[^,]*, .*allowed hosts\)\nrisk high: writes a dotfile\nRun it again with no sandbox\?$/);
+		assert.match(u.confirms[0]!, /blocked: x: Operation not permitted\n\(sandboxed bash writes only in \/.*sandbox-project-[^,]*, .*, not the project's \.git\/config, .*allowed hosts\)\nrisk high: writes a dotfile\nRun it again with no sandbox\?$/);
 		for (const answer of [async () => false, () => Promise.reject(new Error("closed"))]) {
 			u.answer = answer;
 			const no = await s.run(F);
@@ -877,31 +878,37 @@ test("macOS: a Node child denied a localhost bind is detected; low re-runs it, h
 	}
 });
 
-test("Linux: an absent .git/commondir is not denied (the runtime's /dev/null stand-in would break git) but removed after a sandboxed run creates it", async () => {
+test("Linux: a repo gets a real .git/commondir naming itself before any command, so the runtime binds it read-only instead of a /dev/null stand-in git cannot read", async () => {
 	const project = tmp("sandbox-project-");
 	await new Promise((done) => execFile("git", ["init", "-q"], { cwd: project }, done));
 	const cd = join(real(project), ".git", "commondir");
+	const git = () => new Promise<string>((done) => execFile("git", ["status", "--porcelain"], { cwd: project }, (e) => done(e ? e.message : "ok")));
 	seam.load = async () => (await fake()).runtime;
 	delete process.env.PI_SANDBOX_ROOT;
 	try {
-		assert.ok(policy(project).filesystem.denyWrite.includes(cd), "macOS: denied even while absent");
+		seam.platform = () => "darwin";
+		let s = await start(project);
+		await s.shutdown();
+		assert.equal(existsSync(cd), false, "macOS denies it absent; nothing is written");
+		assert.ok(policy(project).filesystem.denyWrite.includes(cd));
 		seam.platform = () => "linux";
-		const deny = policy(project).filesystem.denyWrite;
-		assert.ok(!deny.includes(cd), "Linux: not denied while absent");
-		for (const n of ["config.worktree", "modules", "worktrees"]) assert.ok(deny.includes(join(real(project), ".git", n)), n);
-		const s = await start(project);
+		s = await start(project);
 		try {
-			const { out } = await bash("echo /tmp/evil > .git/commondir", project);
-			assert.match(out, /removed \.git\/commondir/);
-			assert.equal(existsSync(cd), false);
-			const status = await new Promise<string>((done) => execFile("git", ["status", "--porcelain"], { cwd: project }, (e) => done(e ? e.message : "ok")));
-			assert.equal(status, "ok", "git still works");
-			assert.doesNotMatch((await bash("true", project)).out, /removed/, "nothing to remove, nothing said");
+			assert.equal(readFileSync(cd, "utf8"), ".\n", "there before any command runs: no window where a redirect can be written");
+			assert.ok(policy(project).filesystem.denyWrite.includes(cd));
+			assert.equal(await git(), "ok", "git reads it as no redirect");
 		} finally {
 			await s.shutdown();
 		}
-		writeFileSync(cd, "../x"); // one that already exists is denied as it is (no stand-in), on Linux too
-		assert.ok(policy(project).filesystem.denyWrite.includes(cd));
+		writeFileSync(cd, "../x"); // one already there is left as it is (and denied)
+		s = await start(project);
+		await s.shutdown();
+		assert.equal(readFileSync(cd, "utf8"), "../x");
+		// Not a repo: nothing written.
+		const plain = tmp("sandbox-project-");
+		s = await start(plain);
+		await s.shutdown();
+		assert.equal(existsSync(join(plain, ".git")), false);
 	} finally {
 		restore();
 	}
