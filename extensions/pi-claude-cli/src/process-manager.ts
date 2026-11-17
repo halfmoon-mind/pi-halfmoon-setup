@@ -81,7 +81,13 @@ export function spawnClaude(
     stdio: ["pipe", "pipe", "pipe"],
     cwd: options?.cwd ?? process.cwd(),
     // A pi tool can take long, or wait for the user to confirm it; the CLI's MCP call waits as long.
-    env: { ...process.env, MCP_TOOL_TIMEOUT: String(24 * 60 * 60 * 1000) },
+    // The idle timeout (30 min by default) is separate: when it aborts a call pi is still running, the CLI
+    // goes on with calls pi never sees, and each waits on the other.
+    env: {
+      ...process.env,
+      MCP_TOOL_TIMEOUT: String(24 * 60 * 60 * 1000),
+      CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: String(24 * 60 * 60 * 1000),
+    },
   });
 
   return proc as ChildProcess;

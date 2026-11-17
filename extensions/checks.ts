@@ -62,13 +62,13 @@ export const seam = { exec: sandboxedBash.exec };
 
 export type CheckResult = { command: string; ok: boolean; exitCode: number | null; tail: string };
 
-/** Runs one check command; a throw (sandbox down, `timeout:300`) is a failure with its message as the tail. */
+/** Runs one check command; a throw (sandbox down, `timeout:600`) is a failure with its message as the tail. */
 export async function runCheck(command: string, cwd: string, signal?: AbortSignal): Promise<CheckResult> {
 	let out = "";
 	const r = risky("bash", { command }, cwd); // the tool_call hook's confirmation does not see harness runs; with no one to ask, a risky check is not run
 	if (r) return { command, ok: false, exitCode: null, tail: `not run: ${r}, which needs the user's confirmation` };
 	try {
-		const { exitCode } = await seam.exec(command, cwd, { onData: (d) => (out = (out + d.toString()).slice(-TAIL)), signal, timeout: 300 });
+		const { exitCode } = await seam.exec(command, cwd, { onData: (d) => (out = (out + d.toString()).slice(-TAIL)), signal, timeout: 600 });
 		return { command, ok: exitCode === 0, exitCode, tail: out };
 	} catch (e) {
 		return { command, ok: false, exitCode: null, tail: (e instanceof Error ? e.message : String(e)).slice(-TAIL) };

@@ -79,7 +79,7 @@ test("runCheck reports the exit code and the output's tail; a throw is a failure
 		assert.equal(bad.tail.length, 2000);
 		assert.ok(bad.tail.endsWith(`${"-".repeat(97)}29\n`));
 		assert.deepEqual(await runCheck("boom", "/r"), { command: "boom", ok: false, exitCode: null, tail: "timeout:300" });
-		assert.deepEqual(calls[0], { command: "ok", cwd: "/r", timeout: 300 });
+		assert.deepEqual(calls[0], { command: "ok", cwd: "/r", timeout: 600 });
 	} finally {
 		seam.exec = exec;
 	}
