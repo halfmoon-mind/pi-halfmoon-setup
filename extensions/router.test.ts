@@ -248,7 +248,7 @@ test("/laya off routes to the newest Opus without classifying or warning; /laya 
 	assert.equal(s.calls(), 1);
 });
 
-test("a process started with spawnWithLifeline does not outlive a SIGKILLed parent", async () => {
+test("a process started with spawnWithLifeline does not outlive a SIGKILLed parent", async (t) => {
 	// Stand-in for pi: starts `sleep` the way pi starts laya-serve, prints its pid, then idles.
 	const routerUrl = JSON.stringify(new URL("./router.ts", import.meta.url).href);
 	const parent = spawn(
@@ -257,7 +257,10 @@ test("a process started with spawnWithLifeline does not outlive a SIGKILLed pare
 			console.log(spawnWithLifeline("sleep", ["300"], process.env).pid); setInterval(() => {}, 1e6);`],
 		{ stdio: ["ignore", "pipe", "inherit"] },
 	);
-	const pid = Number(String(await new Promise((resolve) => parent.stdout.once("data", resolve))));
+	// A failed assert must not leave the idling parent behind: it would hold the file until the 60s timeout.
+	t.after(() => parent.kill("SIGKILL"));
+	const out = String(await new Promise((resolve) => parent.stdout.once("data", resolve)));
+	const pid = Number(out);
 	// kill(pid, 0) also succeeds on a zombie, so "not alive" means neither running nor a zombie.
 	const alive = () => {
 		try {
@@ -267,7 +270,7 @@ test("a process started with spawnWithLifeline does not outlive a SIGKILLed pare
 			return false;
 		}
 	};
-	assert.ok(alive());
+	assert.ok(alive(), `sleep is not running; the parent printed ${JSON.stringify(out)}`);
 	parent.kill("SIGKILL");
 	const deadline = Date.now() + 5000;
 	while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
