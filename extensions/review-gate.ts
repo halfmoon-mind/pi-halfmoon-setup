@@ -94,6 +94,8 @@ export default function (pi: ExtensionAPI) {
 		].join("\n\n");
 
 		ctx.ui.setStatus("review", "reviewing…");
+		// pi clears its working loader at agent_end, before this hook, so a widget is what shows the wait.
+		ctx.ui.setWidget("review", [ctx.ui.theme.fg("accent", "GPT reviewing the changes…")]);
 		let output = "";
 		let failure = "";
 		try {
@@ -107,6 +109,7 @@ export default function (pi: ExtensionAPI) {
 			failure = err instanceof Error ? err.message : String(err); // the timeout lands here
 		} finally {
 			ctx.ui.setStatus("review", undefined);
+			ctx.ui.setWidget("review", undefined);
 		}
 
 		const verdict = output.split("\n", 1)[0];

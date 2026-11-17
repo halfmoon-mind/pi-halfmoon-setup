@@ -35,7 +35,8 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: (name: string, def: any) => (commands[name] = def) } as any);
 	const notices: string[] = [];
 	const statuses: Record<string, string | undefined> = {};
-	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), notify: (msg: string) => notices.push(msg) };
+	const widgets: Record<string, string[] | undefined> = {};
+	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), setWidget: (key: string, lines?: string[]) => (widgets[key] = lines), notify: (msg: string) => notices.push(msg) };
 	const branch: any[] = [];
 	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => branch } };
 	const assistant = { role: "assistant", content: [{ type: "text", text: "Bumped a.txt to 2." }] };
@@ -49,7 +50,10 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	writeFileSync(join(repo, "a.txt"), "2\n");
 	assert.equal(await settle("json"), undefined, "a subagent's pi is never gated");
 	writeFileSync(verdict, "BLOCK: off by one\nCritical: a.txt:1");
-	const blocked = await settle();
+	const pending = settle();
+	assert.deepEqual(widgets.review, ["GPT reviewing the changes…"], "the wait shows while the reviewer runs");
+	const blocked = await pending;
+	assert.equal(widgets.review, undefined, "and is gone once it answers");
 	assert.equal(blocked.continue, true);
 	assert.match(blocked.entries[0].content, /BLOCK: off by one/);
 	assert.match(readFileSync(log, "utf8"), /git diff [0-9a-f]{40}[\s\S]*Bumped a\.txt to 2\./);
