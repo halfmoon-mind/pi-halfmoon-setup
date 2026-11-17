@@ -19,6 +19,7 @@ const temps = seam.temps;
 const cwd0 = seam.cwd;
 const platform0 = seam.platform;
 const judge0 = seam.judge;
+const judgeHost0 = seam.judgeHost;
 const macOS = { skip: process.platform !== "darwin" && "the real sandbox runs on macOS here" };
 const unique = (name: string) => `${name}-${randomBytes(6).toString("hex")}`;
 // Every fixture dir, removed once all tests (and their runtime shutdowns) are done.
@@ -76,6 +77,7 @@ function restore() {
 	seam.cwd = cwd0;
 	seam.platform = platform0;
 	seam.judge = judge0;
+	seam.judgeHost = judgeHost0;
 }
 
 // Denied in the (fake) sandbox, exit 3 outside it.
@@ -83,16 +85,18 @@ const F = `if [ -n "$IN_SANDBOX" ]; then echo 'x: Operation not permitted' >&2; 
 const LOW = { risk: "low", reason: "a build cache" };
 const HIGH = { risk: "high", reason: "writes a dotfile" };
 
-/** A session on the fake runtime whose judge records its inputs; `judge: null` keeps the default classifier. */
-async function escalating({ judge = async () => LOW, ui, extra, violations }: { judge?: ((input: any, signal?: AbortSignal) => Promise<unknown>) | null; ui?: any; extra?: Record<string, unknown>; violations?: (id: string) => { line: string }[] } = {}) {
+/** A session on the fake runtime whose judges record their inputs; `null` keeps the default classifier. */
+async function escalating({ judge = async () => LOW, host = async () => HIGH, ui, extra, violations }: { judge?: ((input: any, signal?: AbortSignal) => Promise<unknown>) | null; host?: ((input: any) => Promise<unknown>) | null; ui?: any; extra?: Record<string, unknown>; violations?: (id: string) => { line: string }[] } = {}) {
 	const project = tmp("sandbox-project-");
 	const f = await fake(undefined, violations);
 	seam.load = async () => f.runtime;
 	const calls: any[] = [];
+	const hostCalls: any[] = [];
 	if (judge) seam.judge = async (input, signal) => (calls.push(input), judge(input, signal));
+	if (host) seam.judgeHost = async (input) => (hostCalls.push(input), host(input));
 	delete process.env.PI_SANDBOX_ROOT;
 	const s = await start(project, { ui, extra });
-	return { ...s, ...f, calls, run: (command: string) => bash(command, project) };
+	return { ...s, ...f, calls, hostCalls, run: (command: string) => bash(command, project) };
 }
 
 /** A UI whose confirm gives what `answer` returns now, recording every notify. */
@@ -325,6 +329,7 @@ test("macOS: the real sandbox lets bash write the project, not outside it, not r
 		assert.notEqual((await bash(`echo x > ${outside}`, PKG)).exitCode, 0);
 		assert.equal(existsSync(outside), false);
 		assert.notEqual((await bash(`cat ${secret}`, PKG)).exitCode, 0);
+		seam.judgeHost = async () => HIGH;
 		const status = async (url: string) => (await bash(`curl -sS -m 15 -o /dev/null -w '%{http_code}' ${url}`, PKG)).out;
 		assert.doesNotMatch(await status("https://example.com"), /^2\d\d/);
 		assert.match(await status("https://registry.npmjs.org/"), /^200/);
@@ -706,6 +711,145 @@ test("escalation: with a UI, a host the user declined while the command ran is n
 	}
 });
 
+/** Resolves once `f()` holds, plus one event-loop turn. */
+async function until(f: () => boolean) {
+	while (!f()) await new Promise((r) => setTimeout(r, 5));
+	await new Promise((r) => setImmediate(r));
+}
+
+test("host rating: low allows the host for the session, visibly, once per host; with no UI too", async () => {
+	const u = fakeUI();
+	let s = await escalating({ host: async () => LOW, ui: u.ui });
+	try {
+		assert.equal(await s.got.ask!({ host: "repo.maven.apache.org", port: 443 }), true);
+		assert.deepEqual(u.notes.at(-1), ["sandbox: allowed repo.maven.apache.org for this session (risk low: a build cache)", "warning"]);
+		assert.equal(await s.got.ask!({ host: "repo.maven.apache.org", port: 443 }), true);
+		assert.equal(s.hostCalls.length, 1);
+		assert.deepEqual(await Promise.all([s.got.ask!({ host: "dl.google.com", port: 443 }), s.got.ask!({ host: "dl.google.com", port: 443 })]), [true, true]);
+		assert.equal(s.hostCalls.length, 2);
+		assert.equal(u.confirms.length, 0);
+		await s.shutdown();
+		s = await escalating({ host: async () => LOW });
+		assert.equal(await s.got.ask!({ host: "repo.maven.apache.org", port: 443 }), true);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("host rating: high, or a classifier failure, asks with the reason; with no UI it denies", async () => {
+	const u = fakeUI();
+	let s = await escalating({ ui: u.ui });
+	try {
+		u.answer = async () => true;
+		assert.equal(await s.got.ask!({ host: "h1", port: 443 }), true);
+		assert.match(u.confirms[0]!, /bash wants to reach h1:443\.\nrisk high: writes a dotfile\nAllow it for this session\?/);
+		u.answer = async () => false;
+		assert.equal(await s.got.ask!({ host: "h2", port: 443 }), false);
+		u.answer = () => Promise.reject(new Error("closed"));
+		assert.equal(await s.got.ask!({ host: "h3", port: 443 }), false);
+		await s.shutdown();
+		s = await escalating();
+		assert.equal(await s.got.ask!({ host: "h1", port: 443 }), false);
+		for (const [host, reason] of [[async () => Promise.reject(new Error("boom")), /classifier failed: boom/], [async () => ({ risk: "low" }), /no valid verdict/]] as const) {
+			await s.shutdown();
+			s = await escalating({ host });
+			assert.equal(await s.got.ask!({ host: "h4", port: 443 }), false);
+			await s.shutdown();
+			u.answer = async () => false;
+			s = await escalating({ host, ui: u.ui });
+			assert.equal(await s.got.ask!({ host: "h4", port: 443 }), false);
+			assert.match(u.confirms.at(-1)!, reason);
+		}
+		assert.equal(u.confirms.length, 5);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("host rating: PI_SANDBOX_ESCALATE=off asks with no rating, or denies with no UI", async () => {
+	const u = fakeUI();
+	process.env.PI_SANDBOX_ESCALATE = "off";
+	let s = await escalating({ ui: u.ui, host: async () => LOW });
+	try {
+		u.answer = async () => true;
+		assert.equal(await s.got.ask!({ host: "h1", port: 443 }), true);
+		assert.equal(u.confirms[0], "bash wants to reach h1:443. Allow it for this session?");
+		await s.shutdown();
+		s = await escalating({ host: async () => LOW });
+		assert.equal(await s.got.ask!({ host: "h1", port: 443 }), false);
+		assert.equal(s.hostCalls.length, 0);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("host rating: the classifier sees up to 5 running commands, 2000 chars each", async () => {
+	const s = await escalating();
+	try {
+		const ran = s.run("sleep 0.3; echo hi");
+		await until(() => s.wrapped.length === 1);
+		await s.got.ask!({ host: "h1", port: 443 });
+		assert.deepEqual(s.hostCalls[0], { host: "h1", port: 443, commands: ["sleep 0.3; echo hi"], intent: "" });
+		await ran;
+		await s.got.ask!({ host: "h2", port: 443 });
+		assert.deepEqual(s.hostCalls[1].commands, []);
+		const six = Array.from({ length: 6 }, () => s.run(`sleep 0.3; : ${"x".repeat(3000)}`));
+		await until(() => s.wrapped.length === 7);
+		await s.got.ask!({ host: "h3", port: 443 });
+		assert.equal(s.hostCalls[2].commands.length, 5);
+		assert.ok(s.hostCalls[2].commands.every((c: string) => c.length === 2000));
+		await Promise.all(six);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("host rating: with no UI, a host rated high while the command ran, or while the re-run classifier was pending, stops the re-run", async () => {
+	let s = await escalating();
+	try {
+		const ran = s.run(`sleep 0.3; ${F}`);
+		await until(() => s.wrapped.length === 1);
+		assert.equal(await s.got.ask!({ host: "h1", port: 443 }), false);
+		const { exitCode, out } = await ran;
+		assert.equal(exitCode, 1);
+		assert.doesNotMatch(out, /outside\n/);
+		assert.equal(s.calls.length, 0);
+		assert.match(out, /a network host was denied .*ask the user to allow it/);
+		await s.shutdown();
+		let release!: () => void;
+		const pending = new Promise<void>((r) => (release = r));
+		s = await escalating({ judge: async () => (await pending, LOW) });
+		const again = s.run(F);
+		await until(() => s.calls.length === 1);
+		assert.equal(await s.got.ask!({ host: "h2", port: 443 }), false);
+		release();
+		const late = await again;
+		assert.equal(late.exitCode, 1);
+		assert.doesNotMatch(late.out, /outside|re-ran/);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("host rating: a throwing notify on a low verdict denies instead of rejecting", async () => {
+	const u = fakeUI();
+	const s = await escalating({ host: async () => LOW, ui: u.ui });
+	u.ui.notify = () => {
+		throw new Error("no notify");
+	};
+	try {
+		assert.equal(await s.got.ask!({ host: "h1", port: 443 }), false);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
 test("escalation: aborting while the classifier is pending does not re-run", async () => {
 	const ac = new AbortController();
 	const s = await escalating({ judge: async () => (ac.abort(), LOW) });
@@ -757,7 +901,7 @@ test("escalation: the default classifier asks openai/gpt-6.1-terra once, and any
 		{ type: "message", message: { role: "assistant", content: [] } },
 	];
 	const sessionManager = { getEntries: () => entries, getSessionId: () => "s", getSessionFile: () => undefined };
-	const s = await escalating({ judge: null, extra: { modelRegistry, sessionManager } });
+	const s = await escalating({ judge: null, host: null, extra: { modelRegistry, sessionManager } });
 	const call = (args: unknown, stopReason = "toolUse") => async () => ({ role: "assistant", stopReason, content: [{ type: "toolCall", id: "1", name: "verdict", arguments: args }] });
 	try {
 		const denied = async (reason: RegExp) => {
@@ -782,6 +926,7 @@ test("escalation: the default classifier asks openai/gpt-6.1-terra once, and any
 		assert.match(out, /risk low \(gradle cache\) → re-ran/);
 		const { m, context, options } = reg.requests.at(-1);
 		assert.equal(m, model);
+		assert.match(context.systemPrompt, /WITHOUT ANY SANDBOX/);
 		assert.equal(context.tools[0].name, "verdict");
 		assert.equal(options.cacheRetention, "none");
 		assert.equal(options.reasoningEffort, "low");
@@ -795,6 +940,14 @@ test("escalation: the default classifier asks openai/gpt-6.1-terra once, and any
 		assert.deepEqual(input.blocked, ["x: Operation not permitted"]);
 		assert.equal(input.intent, "build the app");
 		assert.equal(reg.requests.length, 3, "one request per classified run");
+		reg.reply = call({ risk: "low", reason: "Maven Central" });
+		assert.equal(await s.got.ask!({ host: "repo.maven.apache.org", port: 443 }), true);
+		const host = reg.requests.at(-1).context;
+		assert.match(host.systemPrompt, /THIS ONE HOST/);
+		assert.equal(host.tools[0].name, "verdict");
+		assert.deepEqual(JSON.parse(host.messages[0].content), { host: "repo.maven.apache.org", port: 443, commands: [], intent: "build the app" });
+		reg.found = false;
+		assert.equal(await s.got.ask!({ host: "other.example", port: 443 }), false);
 	} finally {
 		await s.shutdown();
 		restore();
