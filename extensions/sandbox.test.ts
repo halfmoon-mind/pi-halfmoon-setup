@@ -1306,6 +1306,7 @@ test("allow dirs: PI_SANDBOX_ESCALATE=off offers nothing", async () => {
 test("allow: after a success (`… | cat` hides the failure) an approval widens the policy and does not re-run; localhost too", async () => {
 	const u = fakeUI();
 	u.pick = (o) => o[0];
+	seam.platform = () => "darwin"; // localhost is offered on macOS only
 	const s = await escalating({ ui: u.ui });
 	const n = join(tmp("sandbox-count-"), "n");
 	const D = join(HOME, unique(".pi-sandbox-test"));
@@ -1541,11 +1542,20 @@ test("allow: a No sticks for the session's same parts; a dismissed dialog asks a
 		await s.run(G(E));
 		await s.run(G(E));
 		assert.equal(u.selects.length, 3, "Esc is not sticky");
-		await s.shutdown();
+		// A No to the combined Flutter offer covers its localhost and trustd parts when a later, unrelated trigger names them alone.
+		seam.platform = () => "darwin";
 		u.pick = () => "No";
+		await s.run(N("BIND", SOCKET));
+		assert.equal(u.selects.length, 4);
+		assert.match(u.selects[3]!, /localhost/);
+		assert.match(u.selects[3]!, /trustd/);
+		await s.run(N("BIND", LISTEN));
+		await s.run(N("TRUSTD", "error: CERTIFICATE_VERIFY_FAILED: application verification failure"));
+		assert.equal(u.selects.length, 4, "bind and trust stay declined");
+		await s.shutdown();
 		s = await escalating({ ui: u.ui });
 		await s.run(G(D));
-		assert.equal(u.selects.length, 4);
+		assert.equal(u.selects.length, 5);
 	} finally {
 		await s.shutdown();
 		restore();
