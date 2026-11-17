@@ -136,7 +136,7 @@ The same classification also scores how hard the request is from 0 to 3, and the
 |---|---|---|
 | `scout` | `pi-claude-cli/claude-haiku:high` | Reads the code and summarizes the relevant files and key context |
 | `planner` | `pi-claude-cli/claude-opus:high` | Writes an implementation plan from the exploration and the requirements |
-| `plan-reviewer` | `openai/gpt-6-astra:xhigh` | Fixes blockers in the plan with a different model family before the worker runs it |
+| `plan-reviewer` | `openai/gpt-6.1-sol:xhigh` | Fixes blockers in the plan with a different model family before the worker runs it |
 | `worker` | `pi-claude-cli/claude-opus:high` | Implements the assigned task |
 | `deep-worker` | `openai/gpt-6.1-sol:medium` | Delivers one logic-heavy goal that tests can settle, or replies `ESCALATE` (oh-my-openagent's deep-low lane) |
 | `reviewer` | `openai/gpt-6.1-sol:high` | Reviews code quality and security with a different model family |

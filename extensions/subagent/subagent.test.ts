@@ -24,7 +24,7 @@ test("the package's agents load with their models; user and project agents with 
 		scout: "user user/model",
 		"deep-worker": "user openai/gpt-6.1-sol:medium",
 		planner: "project project/model",
-		"plan-reviewer": "user openai/gpt-6-astra:xhigh",
+		"plan-reviewer": "user openai/gpt-6.1-sol:xhigh",
 		reviewer: "user openai/gpt-6.1-sol:high",
 		worker: "user pi-claude-cli/claude-opus:high",
 	});

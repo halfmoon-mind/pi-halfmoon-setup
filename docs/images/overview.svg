@@ -33,7 +33,7 @@
     <g stroke="#8EA4BC" stroke-width="2" marker-end="url(#arrow)"><path d="M294 565H333"/><path d="M580 565H619"/><path d="M866 565H905"/></g>
     <g fill="#20334B" stroke="#3A516C"><rect x="48" y="520" width="246" height="92" rx="14"/><rect x="334" y="520" width="246" height="92" rx="14"/><rect x="620" y="520" width="246" height="92" rx="14"/><rect x="906" y="520" width="246" height="92" rx="14"/></g>
     <g fill="#F1F5F9" font-size="22" font-weight="700"><text x="72" y="557">scout</text><text x="358" y="557">planner</text><text x="644" y="557">worker</text><text x="930" y="557">reviewer</text></g>
-    <g fill="#A8BBD0" font-size="16"><text x="72" y="585">Explore · Haiku</text><text x="358" y="585">Plan · Opus</text><text x="644" y="585">Implement · Opus</text><text x="930" y="585">Review · GPT-6-astra</text></g>
+    <g fill="#A8BBD0" font-size="16"><text x="72" y="585">Explore · Haiku</text><text x="358" y="585">Plan · Opus</text><text x="644" y="585">Implement · Opus</text><text x="930" y="585">Review · GPT-6.1-sol</text></g>
     <text x="48" y="651" fill="#A8BBD0" font-size="16">/implement: scout → planner → worker</text>
     <text x="48" y="678" fill="#A8BBD0" font-size="16">/implement-and-review: worker → reviewer → worker</text>
   </g>

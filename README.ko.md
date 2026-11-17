@@ -136,7 +136,7 @@ Claude의 `-*` 설정은 등록된 모델 카탈로그에서 해당 계열의 �
 |---|---|---|
 | `scout` | `pi-claude-cli/claude-haiku:high` | 코드를 읽고 관련 파일과 핵심 맥락을 정리 |
 | `planner` | `pi-claude-cli/claude-opus:high` | 탐색 결과와 요구사항으로 구현 계획 작성 |
-| `plan-reviewer` | `openai/gpt-6-astra:xhigh` | worker가 실행하기 전에 다른 모델 계열로 계획의 막히는 문제를 고침 |
+| `plan-reviewer` | `openai/gpt-6.1-sol:xhigh` | worker가 실행하기 전에 다른 모델 계열로 계획의 막히는 문제를 고침 |
 | `worker` | `pi-claude-cli/claude-opus:high` | 할당된 작업을 구현 |
 | `deep-worker` | `openai/gpt-6.1-sol:medium` | 테스트로 확인할 수 있는 논리 중심 목표 하나를 구현하거나 `ESCALATE`로 답함 (oh-my-openagent의 deep-low 레인) |
 | `reviewer` | `openai/gpt-6.1-sol:high` | 다른 모델 계열로 코드 품질과 보안 리뷰 |

@@ -2,7 +2,7 @@
 name: plan-reviewer
 description: Checks an implementation plan for blockers before a worker executes it, from a different model family
 tools: read, grep, find, ls
-model: openai/gpt-6-astra:xhigh
+model: openai/gpt-6.1-sol:xhigh
 ---
 
 You review an implementation plan before a worker executes it. You must NOT make any changes to files.
