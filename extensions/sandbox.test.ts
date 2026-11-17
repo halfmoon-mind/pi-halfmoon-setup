@@ -10,7 +10,7 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createWriteToolDefinition, discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
 import compactTools from "./compact-tools.ts";
-import sandbox, { blocked, merge, offer, policy, real, risky, sandboxedBash, scanner, seam, verdict } from "./sandbox.ts";
+import sandbox, { blocked, merge, offer, opening, policy, real, risky, sandboxedBash, scanner, seam, verdict } from "./sandbox.ts";
 
 const PKG = real(dirname(dirname(fileURLToPath(import.meta.url))));
 const HOME = homedir();
@@ -29,7 +29,7 @@ const tmp = (prefix: string) => (made.push(mkdtempSync(join(tmpdir(), prefix))),
 after(() => made.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 // A fake runtime for policy tests: the real config schema, a SandboxManager that starts nothing. A wrapped command
-// runs with IN_SANDBOX set and ALLOW (allowWrite, `:`-joined); `ask` is the host callback it was initialized with,
+// runs with IN_SANDBOX set, ALLOW (allowWrite, `:`-joined), BIND (allowLocalBinding) and TRUSTD (enableWeakerNetworkIsolation); `ask` is the host callback it was initialized with,
 // `ids` each wrap's commandId, `updates` each updateConfig.
 async function fake(init: (c: any, ask: any) => Promise<void> = async () => {}, violations: (id: string) => { line: string }[] = () => []) {
 	const actual = await load();
@@ -45,7 +45,7 @@ async function fake(init: (c: any, ask: any) => Promise<void> = async () => {}, 
 		updateConfig: (c: any) => (updates.push(c), (cfg = c)),
 		cleanupAfterCommand: () => {},
 		getSandboxViolationStore: () => ({ getViolationsForCommand: (id: string) => violations(id) }),
-		wrapWithSandbox: async (c: string, _b?: string, _c?: unknown, _s?: AbortSignal, o?: { commandId?: string }) => (wrapped.push(c), ids.push(o?.commandId), `IN_SANDBOX=1; ALLOW='${cfg.filesystem.allowWrite.join(":")}'; export IN_SANDBOX ALLOW; ${c}`),
+		wrapWithSandbox: async (c: string, _b?: string, _c?: unknown, _s?: AbortSignal, o?: { commandId?: string }) => (wrapped.push(c), ids.push(o?.commandId), `IN_SANDBOX=1; ALLOW='${cfg.filesystem.allowWrite.join(":")}'; BIND='${cfg.network.allowLocalBinding}'; TRUSTD='${cfg.enableWeakerNetworkIsolation}'; export IN_SANDBOX ALLOW BIND TRUSTD; ${c}`),
 	};
 	return { runtime: { ...actual, SandboxManager } as any, wrapped, ids, got, updates };
 }
@@ -93,7 +93,7 @@ const LOW = { risk: "low", reason: "a build cache" };
 const HIGH = { risk: "high", reason: "writes a dotfile" };
 
 /** A session on the fake runtime whose judges record their inputs; `null` keeps the default classifier. */
-async function escalating({ judge = async () => LOW, host = async () => HIGH, ui, extra, violations }: { judge?: ((input: any, signal?: AbortSignal) => Promise<unknown>) | null; host?: ((input: any) => Promise<unknown>) | null; ui?: any; extra?: Record<string, unknown>; violations?: (id: string) => { line: string }[] } = {}) {
+async function escalating({ judge = async () => LOW, host = async () => HIGH, ui, extra, violations, files }: { judge?: ((input: any, signal?: AbortSignal) => Promise<unknown>) | null; host?: ((input: any) => Promise<unknown>) | null; ui?: any; extra?: Record<string, unknown>; violations?: (id: string) => { line: string }[]; files?: Record<string, string> } = {}) {
 	const project = tmp("sandbox-project-");
 	const f = await fake(undefined, violations);
 	seam.load = async () => f.runtime;
@@ -102,7 +102,7 @@ async function escalating({ judge = async () => LOW, host = async () => HIGH, ui
 	if (judge) seam.judge = async (input, signal) => (calls.push(input), judge(input, signal));
 	if (host) seam.judgeHost = async (input) => (hostCalls.push(input), host(input));
 	delete process.env.PI_SANDBOX_ROOT;
-	const s = await start(project, { ui, extra });
+	const s = await start(project, { ui, extra, files });
 	return { ...s, ...f, calls, hostCalls, run: (command: string) => bash(command, project) };
 }
 
@@ -294,6 +294,9 @@ test("sandbox.json appends arrays and replaces scalars, and a glob is refused", 
 	assert.throws(() => merge(policy(root), { filesystem: { denyRead: ["~/*.pem"] } }, root), /glob/);
 	assert.throws(() => merge(policy(root), { filesystem: { allowWrite: ["src/[ab]"] } }, root), /glob/);
 	assert.throws(() => merge(policy(root), { credentials: {} }, root), /unsupported section/);
+	assert.throws(() => merge(policy(root), { allowAppleEvents: true }, root), /unsupported section/);
+	assert.equal(merge(policy(root), { enableWeakerNetworkIsolation: true }, root).enableWeakerNetworkIsolation, true);
+	assert.throws(() => merge(policy(root), { enableWeakerNetworkIsolation: "yes" }, root), /true or false/);
 	assert.throws(() => merge(policy(root), [], root), /object/);
 
 	seam.load = async () => (await fake()).runtime;
@@ -1103,6 +1106,12 @@ test("Linux: a repo gets a real .git/commondir naming itself before any command,
 // Denied in the (fake) sandbox under D until D is writable (in $ALLOW); exit 3 outside it.
 const G = (D: string) => `case ":$ALLOW:" in *":${D}:"*) echo ok; exit 0;; esac; echo "bash: line 1: ${D}/cache/x: Operation not permitted" >&2; if [ -n "$IN_SANDBOX" ]; then exit 1; fi; echo outside; exit 3`;
 const FLUTTER = ["fvm", ".pub-cache", ".dart-tool", ".dartServer", ".flutter", ".flutter-devtools", ".config/flutter", "Library/Caches/flutter_engine"];
+const SOCKET = "SocketException: Failed to create server socket (OS Error: Operation not permitted, errno = 1), address = 127.0.0.1, port = 0";
+const LISTEN = "Error: listen EPERM: operation not permitted 127.0.0.1:3000";
+const UNIXSOCK = "Error: listen EPERM: operation not permitted /tmp/x.sock";
+const CERT = "HandshakeException: Handshake error in client (OS Error: CERTIFICATE_VERIFY_FAILED: application verification failure(handshake.cc:297))";
+// Prints `line` (denied in the fake sandbox) until $v is `true`, like G; exit 3 outside it.
+const N = (v: string, line: string) => `if [ "$${v}" = true ]; then echo ok; exit 0; fi; echo '${line}' >&2; if [ -n "$IN_SANDBOX" ]; then exit 1; fi; echo outside; exit 3`;
 
 test("offer: a blocked path outside the writable dirs proposes its Flutter/Dart bundle or its one tool dir, never a broad, config or credential dir", () => {
 	const home = tmp("sandbox-home-");
@@ -1118,7 +1127,7 @@ test("offer: a blocked path outside the writable dirs proposes its Flutter/Dart 
 	const at = (...ds: string[]) => ds.map((d) => join(H, d));
 	try {
 		const fvm = `bash: ${H}/fvm/versions/3.35.7/bin/internal/update_engine_version.sh: line 74: ${H}/fvm/versions/3.35.7/bin/cache/engine.stamp: Operation not permitted`;
-		assert.deepEqual(offer([fvm], P()), { path: `${H}/fvm/versions/3.35.7/bin/cache/engine.stamp`, dirs: at(...FLUTTER) });
+		assert.deepEqual(offer([fvm], P()), { line: `${H}/fvm/versions/3.35.7/bin/cache/engine.stamp`, dirs: at(...FLUTTER), ...(seam.platform() === "darwin" ? { bind: true, trust: true } : {}) });
 		const dart = `FileSystemException: Cannot open file, path = '${H}/.dart-tool/dart-flutter-telemetry-session.json' (OS Error: Operation not permitted, errno = 1)`;
 		assert.deepEqual(dirs(dart), at(...FLUTTER));
 		assert.deepEqual(dirs(dart, P({ allowWrite: [project, join(H, "fvm")] })), at(...FLUTTER.slice(1)));
@@ -1294,15 +1303,22 @@ test("allow dirs: PI_SANDBOX_ESCALATE=off offers nothing", async () => {
 	}
 });
 
-test("allow dirs: a success (`… | cat` hides the failure) still offers the dir; session re-runs sandboxed", async () => {
+test("allow: after a success (`… | cat` hides the failure) an approval widens the policy and does not re-run; localhost too", async () => {
 	const u = fakeUI();
 	u.pick = (o) => o[0];
 	const s = await escalating({ ui: u.ui });
+	const n = join(tmp("sandbox-count-"), "n");
+	const D = join(HOME, unique(".pi-sandbox-test"));
 	try {
-		const { exitCode, out } = await s.run(`(${G(join(HOME, unique(".pi-sandbox-test")))}) 2>&1 | cat`);
-		assert.equal(exitCode, 0);
-		assert.ok(out.endsWith("→ re-ran in the sandbox]\nok\n"), out);
-		assert.equal(s.updates.length, 1);
+		for (const cmd of [G(D), N("BIND", LISTEN)]) {
+			const { exitCode, out } = await s.run(`echo x >> ${n}; (${cmd}) 2>&1 | cat`);
+			assert.equal(exitCode, 0);
+			assert.ok(out.endsWith("; not re-run, since it exited 0: run it again if it needs that]\n"), out);
+		}
+		assert.equal(readFileSync(n, "utf8"), "x\nx\n", "one run each");
+		assert.equal(s.updates.length, 2);
+		assert.ok(s.updates[0].filesystem.allowWrite.includes(D));
+		assert.equal(s.updates[1].network.allowLocalBinding, true);
 		assert.equal(s.calls.length, 0);
 	} finally {
 		await s.shutdown();
@@ -1329,13 +1345,14 @@ test("allow dirs: a success with No or a dismissed dialog returns the first run,
 	}
 });
 
-test("allow dirs: a success with no UI stays as it is: no marker, no classifier", async () => {
+test("allow: a success with no UI gets a marker naming the parent session and the sandbox.json to paste; no classifier, one run", async () => {
 	const s = await escalating({ judge: async () => LOW });
 	try {
 		const { exitCode, out } = await s.run(`(${G(join(HOME, unique(".pi-sandbox-test")))}) 2>&1 | cat`);
 		assert.equal(exitCode, 0);
-		assert.doesNotMatch(out, /\[sandbox:/);
+		assert.match(out, /exited 0, but writes to ~\/\.pi-sandbox-test-\w+ needs the user's approval; not re-run\. A pi with a UI \(the parent session\) can run this same command to get the prompt; or ask the user to save this as .*sandbox\.json and restart pi: \{"filesystem":\{"allowWrite":\["~\/\.pi-sandbox-test-/);
 		assert.equal(s.calls.length, 0);
+		assert.equal(s.wrapped.length, 1);
 	} finally {
 		await s.shutdown();
 		restore();
@@ -1358,5 +1375,197 @@ test("macOS: allowing a dir widens the real sandbox's next wrap", macOS, async (
 		await s.shutdown();
 		restore();
 		rmSync(outside, { recursive: true, force: true }); // only ours: the name is unique
+	}
+});
+
+test("opening: a loopback bind denial opens localhost, a macOS TLS verification failure trustd; each only while closed", () => {
+	const P = (network = {}, extra = {}): any => ({ network, filesystem: {}, ...extra });
+	const proxy = "curl: (56) CONNECT tunnel failed, response 403; X-Proxy-Error: blocked-by-allowlist; listen localhost:8080";
+	try {
+		seam.platform = () => "darwin";
+		for (const l of [SOCKET, LISTEN]) assert.deepEqual(opening([l], P()), { key: "allowLocalBinding", line: l });
+		for (const l of [UNIXSOCK, proxy, "x: Operation not permitted"]) assert.equal(opening([l], P()), undefined, l);
+		assert.deepEqual(opening([CERT], P()), { key: "enableWeakerNetworkIsolation", line: CERT });
+		assert.equal(opening([SOCKET, LISTEN], P({ allowLocalBinding: true })), undefined);
+		assert.equal(opening([CERT], P({}, { enableWeakerNetworkIsolation: true })), undefined);
+		seam.platform = () => "linux";
+		for (const l of [CERT, SOCKET, LISTEN]) assert.equal(opening([l], P()), undefined, l);
+	} finally {
+		restore();
+	}
+});
+
+test("allow localhost: a non-Dart bind denial offers binding alone; session allows it live and re-runs sandboxed, always saves it, No goes on to the classifier", async () => {
+	const u = fakeUI();
+	u.pick = (o) => o[0];
+	seam.platform = () => "darwin";
+	let s = await escalating({ ui: u.ui, judge: async () => HIGH });
+	try {
+		const { exitCode, out } = await s.run(N("BIND", LISTEN));
+		assert.equal(exitCode, 0);
+		assert.ok(out.endsWith("[sandbox: blocked; allowed localhost binding for this session → re-ran in the sandbox]\nok\n"), out);
+		assert.equal(s.updates.length, 1);
+		assert.equal(s.updates[0].network.allowLocalBinding, true);
+		assert.equal(s.updates[0].enableWeakerNetworkIsolation, undefined);
+		const t = u.selects[0]!;
+		assert.match(t, /listen on any local network interface and connect to localhost\?/);
+		assert.match(t, /any interface and port, not just localhost/);
+		assert.match(t, /every localhost service, including proxies or forwarders that can bypass the network allowlist/);
+		assert.doesNotMatch(t, /writes to|trustd/);
+		assert.ok(t.includes(`blocked: ${LISTEN}`));
+		assert.equal(s.calls.length, 0);
+		await s.shutdown();
+		u.pick = (o) => o[1];
+		s = await escalating({ ui: u.ui });
+		assert.equal((await s.run(N("BIND", LISTEN))).exitCode, 0);
+		assert.deepEqual(JSON.parse(readFileSync(join(s.agentDir, "sandbox.json"), "utf8")), { network: { allowLocalBinding: true } });
+		await s.shutdown();
+		u.pick = () => "No";
+		s = await escalating({ ui: u.ui });
+		const no = await s.run(N("BIND", LISTEN));
+		assert.equal(no.exitCode, 3);
+		assert.match(no.out, /risk low \(a build cache\) → re-ran outside the sandbox/);
+		assert.deepEqual(s.calls[0].blocked, [LISTEN]);
+		assert.equal(s.updates.length, 0);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("allow trustd: on macOS a TLS verification failure offers trustd alone, session or always; Linux offers nothing", async () => {
+	const TLS = "error: CERTIFICATE_VERIFY_FAILED: application verification failure";
+	const u = fakeUI();
+	u.pick = (o) => o[0];
+	seam.platform = () => "darwin";
+	let s = await escalating({ ui: u.ui });
+	try {
+		const r = await s.run(N("TRUSTD", TLS));
+		assert.equal(r.exitCode, 0);
+		assert.ok(r.out.endsWith("allowed trustd TLS checks for this session → re-ran in the sandbox]\nok\n"), r.out);
+		assert.match(u.selects[0]!, /trustd/);
+		assert.match(u.selects[0]!, /exfiltration/);
+		assert.doesNotMatch(u.selects[0]!, /writes to|listen/);
+		assert.equal(s.updates[0].enableWeakerNetworkIsolation, true);
+		assert.equal(s.updates[0].network.allowLocalBinding, false);
+		await s.shutdown();
+		u.pick = (o) => o[1];
+		s = await escalating({ ui: u.ui });
+		assert.equal((await s.run(N("TRUSTD", TLS))).exitCode, 0);
+		const file = readFileSync(join(s.agentDir, "sandbox.json"), "utf8");
+		assert.deepEqual(JSON.parse(file), { enableWeakerNetworkIsolation: true });
+		await s.shutdown();
+		s = await escalating({ ui: u.ui, files: { "sandbox.json": file } });
+		assert.deepEqual(await s.run(N("TRUSTD", TLS)), { exitCode: 0, out: "ok\n" });
+		assert.equal(u.selects.length, 2, "a new session from that file offers nothing");
+		await s.shutdown();
+		seam.platform = () => "linux";
+		s = await escalating({ ui: u.ui });
+		assert.equal((await s.run(N("TRUSTD", TLS))).exitCode, 3);
+		assert.equal(u.selects.length, 2);
+		assert.deepEqual(s.calls[0].blocked, [TLS]);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("Flutter set: a Dart trigger offers the closed bundle dirs, localhost and (macOS) trustd in one select; a non-Dart one only its own part", async () => {
+	const home = tmp("sandbox-home-");
+	const H = real(home);
+	const at = (...ds: string[]) => ds.map((d) => join(H, d));
+	seam.home = () => home;
+	seam.temps = () => []; // the fake home stands in for one outside every writable dir
+	seam.platform = () => "darwin";
+	const u = fakeUI();
+	u.pick = (o) => o[0];
+	let s = await escalating({ ui: u.ui });
+	const dart = `FileSystemException: Cannot open file, path = '${H}/.dart-tool/x.json' (OS Error: Operation not permitted, errno = 1)`;
+	const cmd = `case ":$ALLOW:" in *":${H}/.dart-tool:"*) ;; *) echo "${dart}" >&2; exit 1;; esac; [ "$BIND" = true ] || { echo '${SOCKET}' >&2; exit 1; }; [ "$TRUSTD" = true ] || { echo '${CERT}' >&2; exit 1; }; echo ok`;
+	const P = (network = {}, extra = {}): any => ({ network, filesystem: { allowWrite: [], denyWrite: [], denyRead: [], allowRead: [] }, ...extra });
+	try {
+		const r = await s.run(cmd);
+		assert.equal(r.exitCode, 0, r.out);
+		assert.equal(u.selects.length, 1, "no second select when the re-run would hit the socket and cert lines");
+		assert.match(u.selects[0]!, /allow writes to ~\/fvm, ~\/\.pub-cache, .*~\/Library\/Caches\/flutter_engine\?/);
+		assert.match(u.selects[0]!, /listen on any local network interface/);
+		assert.match(u.selects[0]!, /trustd/);
+		assert.match(r.out, /allowed writes to ~\/fvm, .* and localhost binding and trustd TLS checks for this session → re-ran in the sandbox\]\nok\n$/);
+		assert.equal(s.updates.length, 1);
+		const c = s.updates[0];
+		assert.ok(at(...FLUTTER).every((d) => c.filesystem.allowWrite.includes(d)));
+		assert.equal(c.network.allowLocalBinding, true);
+		assert.equal(c.enableWeakerNetworkIsolation, true);
+		assert.equal(s.calls.length, 0);
+		// Always: the same one select saves every part (a restart from it would resolve `~` to the real home, not this fake one).
+		await s.shutdown();
+		u.pick = (o) => o[1];
+		s = await escalating({ ui: u.ui });
+		assert.equal((await s.run(cmd)).exitCode, 0);
+		assert.equal(u.selects.length, 2);
+		const saved = JSON.parse(readFileSync(join(s.agentDir, "sandbox.json"), "utf8"));
+		assert.deepEqual(saved, { filesystem: { allowWrite: FLUTTER.map((d) => `~/${d}`) }, network: { allowLocalBinding: true }, enableWeakerNetworkIsolation: true });
+		// offer() alone: Node's bind is localhost only; already-open parts are left out; on Linux the Flutter set is its dirs only.
+		assert.deepEqual(offer([LISTEN], P()), { dirs: [], line: LISTEN, bind: true });
+		assert.deepEqual(offer([SOCKET], P()), { dirs: at(...FLUTTER), line: SOCKET, bind: true, trust: true });
+		assert.deepEqual(offer([CERT], P({ allowLocalBinding: true }, { filesystem: { ...P().filesystem, allowWrite: at("fvm") } })), { dirs: at(...FLUTTER.slice(1)), line: CERT, trust: true });
+		assert.equal(offer([SOCKET, CERT], P({ allowLocalBinding: true }, { enableWeakerNetworkIsolation: true, filesystem: { ...P().filesystem, allowWrite: [H] } })), undefined);
+		seam.platform = () => "linux";
+		assert.deepEqual(offer([CERT], P()), { dirs: at(...FLUTTER), line: CERT });
+		assert.deepEqual(offer([SOCKET], P()), { dirs: at(...FLUTTER), line: SOCKET });
+		assert.equal(offer([LISTEN], P()), undefined);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("allow: a No sticks for the session's same parts; a dismissed dialog asks again; a new session asks again", async () => {
+	const u = fakeUI();
+	u.pick = () => "No";
+	let s = await escalating({ ui: u.ui });
+	const D = join(HOME, unique(".pi-sandbox-test"));
+	try {
+		assert.equal((await s.run(G(D))).exitCode, 3);
+		assert.equal(u.selects.length, 1);
+		const again = await s.run(G(D));
+		assert.equal(again.exitCode, 3, "nonzero goes to the classifier");
+		assert.equal(s.calls.length, 2);
+		const ok = await s.run(`(${G(D)}) 2>&1 | cat`);
+		assert.equal(ok.exitCode, 0);
+		assert.doesNotMatch(ok.out, /\[sandbox:/, "exit 0 returns");
+		assert.equal(s.calls.length, 2);
+		assert.equal(u.selects.length, 1);
+		u.pick = () => undefined;
+		const E = join(HOME, unique(".pi-sandbox-test"));
+		await s.run(G(E));
+		await s.run(G(E));
+		assert.equal(u.selects.length, 3, "Esc is not sticky");
+		await s.shutdown();
+		u.pick = () => "No";
+		s = await escalating({ ui: u.ui });
+		await s.run(G(D));
+		assert.equal(u.selects.length, 4);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("macOS: allowing localhost lets the real sandbox's next wrap listen on 127.0.0.1", macOS, async () => {
+	const listen = `${JSON.stringify(process.execPath)} -e 'require("net").createServer().on("error", (e) => { console.error(e.message); process.exit(1); }).listen(0, "127.0.0.1", function () { console.log("listening"); this.close(); })'`;
+	const u = fakeUI();
+	u.pick = (o) => o[0];
+	delete process.env.PI_SANDBOX_ROOT;
+	const s = await start(tmp("sandbox-project-"), { ui: u.ui });
+	try {
+		seam.judge = async () => HIGH;
+		const r = await bash(listen, s.ctx.cwd);
+		assert.equal(r.exitCode, 0, r.out);
+		assert.match(r.out, /allowed localhost binding for this session → re-ran in the sandbox\]\nlistening\n$/);
+		assert.equal(u.selects.length, 1);
+	} finally {
+		await s.shutdown();
+		restore();
 	}
 });
