@@ -96,7 +96,7 @@ The prompts use the `subagent` tool's `chain` mode and pass each step's output t
 
 ### Plan first and handoff
 
-You do not need a command for this. In an interactive session, every request comes with a short note asking the model whether it needs a plan. A quick fix (one change you can state in one sentence, with no design choice) is built directly. Anything else is planned first: the model reads the code, looks up outside docs if it has web search, runs `planner` and `plan-reviewer`, and writes the plan to `docs/plans/<name>.md` with checkbox steps and success criteria commands. The `handoff` tool refuses a plan until `plan-reviewer` has run in the session; a plan this session already accepted, or one opened by `/handoff`, is exempt. When the plan touches three or more files, or changes a stored data format or a public interface, pi shows a summary and waits for your go-ahead.
+You do not need a command for this. In an interactive session, every request comes with a short note asking the model whether it needs a plan. A quick fix (one change you can state in one sentence, with no design choice) is built directly. Anything else is planned first: the model reads the code, looks up outside docs if it has web search, runs `planner` and `plan-reviewer`, and writes the plan to `docs/plans/<name>.md`: each checkbox step line ends with ``- files: a.ts, b.ts (new) - check: `<command>` ``, and `## Success criteria` has one `` - `<command>` `` line per command. The `handoff` tool refuses a plan until `plan-reviewer` has run in the session, and refuses one not in that format with the problems listed; a plan this session already accepted, or one opened by `/handoff`, is exempt. When the plan touches three or more files, or changes a stored data format or a public interface, pi shows a summary and waits for your go-ahead.
 
 Then the model calls the `handoff` tool, which decides where the build runs:
 
@@ -106,7 +106,7 @@ Then the model calls the `handoff` tool, which decides where the build runs:
 | Messy in the model's judgment (it sees the counts of failed tool calls and review `BLOCK`s) | In a new session, when the model asks for one |
 | Otherwise | Here, through the `worker` subagent |
 
-While building, the model ticks each step in the plan file, calls `handoff` again between steps so a session that fills up mid-build hands off the rest, and does not finish until every success criteria command passes. A worker's pi has no `handoff` tool, so a worker whose context gets compacted finishes its current step and stops; the main session calls `handoff` again and gives the steps left to a fresh worker. A plan may tag independent, substantial steps that edit separate files as one parallel group. The building session runs the group as one parallel subagent call with a worker per step, then checks and ticks those steps itself, since the workers share one working tree. The review gate also checks ticked steps against the code, and since plans stay out of git, a tick alone counts as a change to review. A plan judges a request while it has steps left, or when that request ticked steps in it. `/handoff <plan>` starts a plan in a new session by hand. Either way, the new session's first message includes the plan's text, so the router picks its tier and thinking effort from the plan rather than from a generic kickoff.
+While building, the model ticks each step in the plan file, calls `handoff` again between steps so a session that fills up mid-build hands off the rest, and does not finish until every success criteria command passes. A worker's pi has no `handoff` tool, so a worker whose context gets compacted finishes its current step and stops; the main session calls `handoff` again and gives the steps left to a fresh worker. A plan may tag independent, substantial steps that edit separate files as one parallel group. The building session runs the group as one parallel subagent call with a worker per step, then checks and ticks those steps itself, since the workers share one working tree. The review gate also checks ticked steps against the code, and since plans stay out of git, a tick alone counts as a change to review. Before that review, the harness itself runs the check of each step the request ticked, then the success criteria once no step is left; a failing command goes back to the model with the end of its output, to fix the code or untick the step (at most three rounds per request). A plan judges a request while it has steps left, or when that request ticked steps in it. `/handoff <plan>` starts a plan in a new session by hand. Either way, the new session's first message includes the plan's text, so the router picks its tier and thinking effort from the plan rather than from a generic kickoff.
 
 Plan files stay out of git: when pi starts in a repository that does not ignore `docs/plans/` already, it adds that line to `.git/info/exclude`, which is local and never committed.
 
@@ -147,7 +147,7 @@ The default `agentScope: "user"` loads the package's agents and `~/.pi/agent/age
 
 ### Review gate
 
-Like the Codex plugin's stop-time review in Claude Code: when a prompt's run changed the repository, the `reviewer` agent reviews those changes before pi stops. It also gets your last three messages (a long one cut to its start and end) and the tool calls the run made with how each ended, so it can check that the changes do what you asked and that a claimed check really ran and passed; this text goes to the `openai` provider. Its first line is `ALLOW` or `BLOCK`, and a `BLOCK` goes back to the model as a message to fix the issue or explain why it is not one, and to write its final reply as the full report on your request, with the fix as a short note at the end. Work from a plan is also checked against the steps the plan ticks. Each prompt gets at most three reviews, and a change after the third shows a warning that it went unreviewed. A failed or timed-out review never blocks, and only interactive sessions are gated, so subagents never review themselves. While the gate is off, the footer shows `review off`. While a review runs, it shows `reviewing…`; Esc cannot stop it, but it times out after 10 minutes.
+Like the Codex plugin's stop-time review in Claude Code: when a prompt's run changed the repository, the `reviewer` agent reviews those changes before pi stops. It also gets your last three messages (a long one cut to its start and end) and the tool calls the run made with how each ended, so it can check that the changes do what you asked and that a claimed check really ran and passed; this text goes to the `openai` provider. Its first line is `ALLOW` or `BLOCK`, read tolerantly (any case, markdown such as `**BLOCK:**` around it); a review with no verdict line goes to `gpt-6.1-terra` on `openai` to extract one. A `BLOCK` goes back to the model as a message to fix the issue or explain why it is not one, and to write its final reply as the full report on your request, with the fix as a short note at the end. Work from a plan is also checked against the steps the plan ticks. Each prompt gets at most three reviews, and a change after the third shows a warning that it went unreviewed. A failed or timed-out review, or one with no verdict, never blocks: the footer shows `unreviewed` until the next prompt, and the session records the verdict as `NONE`. Only interactive sessions (and print mode under `PI_EVAL=1`) are gated, so subagents never review themselves. While the gate is off, the footer shows `review off`. While a review runs, it shows `reviewing…`; Esc cannot stop it, but it times out after 10 minutes.
 
 | pi command | Action |
 |---|---|
@@ -292,6 +292,7 @@ extensions/
   footer.ts                 Two-line footer with the routed tier and model
   review-gate.ts            Stop-time review of each prompt's changes
   handoff.ts                Plan-first note, the handoff tool, and /handoff
+  checks.ts                 The plan step format: parse, lint, and run a check
   pdf-read.ts               read for PDFs: page text plus images where needed
   office-read.ts            read for .docx, .xlsx and .pptx: text plus images where needed
   tab-follow-up.ts          Tab queues a follow-up while the agent runs
@@ -299,6 +300,7 @@ extensions/
   subagent/                 Subagent runs and agent discovery
   pi-claude-cli/            Claude CLI provider
 docs/images/                README diagram and GitHub social preview image
+bench/agent/                Agent eval set: pass and false-done rates per model
 ```
 
 ## Tests
@@ -312,6 +314,16 @@ npm test
 The tests cover the router's classification, fallback, model selection, and process lifetime; the subagent tool's agent loading and chain runs; the review gate's change detection, verdicts, and plan checks; the handoff's session signals, its stay-or-leave decision and new session, and keeping plan files out of git; which PDF pages `read` sends with an image, and its page ranges; how it sends Word tracked changes, Excel cells and formulas, and PowerPoint chart data, notes and pictures; and the Claude CLI provider's system prompt handoff, tool calls, and CLI error handling. pi's packages load from the installed pi (`~/.pi/agent/install`), and fake processes stand in for `pi` and `claude`. Real provider authentication and full workflow runs need to be checked separately.
 
 GitHub Actions runs the same tests on every push and PR, and weekly against the newest pi from npm, so a pi update that breaks this package shows up right away.
+
+### Eval set
+
+`PI_EVAL=1` gates print mode (`pi -p`) like an interactive session: the plan-first note, `handoff` (which then never moves the build to a new session), plan checks and the review gate. Subagents run in json mode and are never gated. `bench/agent/` holds eight tasks that measure pass rate and false-done rate per model, with the gate and without:
+
+```bash
+node --import ./extensions/test-hooks.ts bench/agent/run.ts --dry
+```
+
+`--dry` checks the fixtures with no model calls, but it needs the installed pi, since it loads pi's packages through `test-hooks.ts`. Real runs are manual and billed, and a gate run needs `/review-gate on`; see `bench/agent/README.md`.
 
 ## License and attribution
 

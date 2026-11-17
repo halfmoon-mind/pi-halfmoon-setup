@@ -12,6 +12,7 @@ Check only what would stop a capable developer or make the result wrong:
 - Every step has a starting point: a file, a function, or a pattern to follow
 - Steps do not contradict each other or the requirements
 - Success criteria exist and can be checked by running something
+- Each checkbox step line ends with ``- files: … - check: `cmd` ``, and success criteria are `` - `cmd` `` lines; fix it in place when not
 
 Not blockers: style, edge cases a developer can handle while implementing, missing nice-to-haves, or a different approach you would prefer.
 

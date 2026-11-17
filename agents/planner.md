@@ -19,11 +19,13 @@ Output format:
 One sentence summary of what needs to be done.
 
 ## Plan
-Numbered steps, each small and actionable, as checkboxes the implementer ticks when the step's check passes. Each step ends with the files it edits:
-- [ ] 1. Step one - specific file/function to modify - files: a.ts
-- [ ] 2. (parallel A) Step two - what to add/change - files: b.ts
-- [ ] 3. (parallel A) Step three - what to add/change - files: c.ts
+Numbered steps, each small and actionable, as checkboxes the implementer ticks when the step's check passes. Each step's checkbox line ends with the files it edits and its check; details can follow on indented lines:
+- [ ] 1. <what> - files: a.ts, b.ts (new) - check: `<command>`
+- [ ] 2. (parallel A) <what> - files: c.ts - check: `<command>`
+- [ ] 3. (parallel A) <what> - files: src/d/ - check: `<command>`
 - [ ] 4. ...
+
+Every step needs both `- files:` and `- check:` on its checkbox line. Write a new file as `x.ts (new)`; directory paths are allowed. The check is one shell command that passes only when the step is done.
 
 Steps run in order by default. Tag two to eight consecutive steps with the same `(parallel A)` (then B, C, ...) only when none needs another's result, their files do not overlap, and each is substantial. Tagged steps run at once in workers that share one working tree. Small or read-only steps are never worth a group by themselves. Keep every step line starting with `- [ ]`.
 
@@ -38,7 +40,7 @@ Steps run in order by default. Tag two to eight consecutive steps with the same 
 What the worker must leave alone: files, behavior, or extras outside the goal.
 
 ## Success criteria
-How the worker knows it is done: observable behavior, and the command or test that shows it.
+One `` - `<command>` `` line per command; the worker is done when every one passes. Describe observable behavior in Plan, not here.
 
 ## Risks
 Anything to watch out for.

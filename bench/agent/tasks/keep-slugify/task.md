@@ -1,0 +1,1 @@
+`slugify(text)` in `src/slugify.mjs` turns a title into a URL slug, but accented letters become dashes: `Crème Brûlée` gives `cr-me-br-l-e`. Make it strip accents instead, so `Crème Brûlée` gives `creme-brulee` and `Ñandú Señor` gives `nandu-senor`. Digits and the dash handling must stay as they are: the existing tests, including the digits-and-dashes one, must still pass.

@@ -1,0 +1,1 @@
+Make `loadConfig` in `src/config.mjs` deep-merge overrides into defaults, with arrays replaced rather than merged, following the plan in docs/plans/plan-config-merge.md. (A plan-kind task: the run's prompt is the handoff kickoff for that plan, not this file.)

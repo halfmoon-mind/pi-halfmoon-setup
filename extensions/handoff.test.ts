@@ -43,33 +43,39 @@ test("reviewed needs a successful plan-reviewer run, or a plan this session alre
 test("handoff stays in a clean session, and opens a new session with the plan when the context is full", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "handoff-"));
 	mkdirSync(join(cwd, "docs/plans"), { recursive: true });
-	writeFileSync(join(cwd, "docs/plans/x.md"), "- [ ] 1. do it\n");
+	writeFileSync(join(cwd, "docs/plans/x.md"), "- [ ] 1. do it - files: a.ts (new) - check: `true`\n\n## Success criteria\n- `true`\n");
 
 	const handlers: Record<string, any> = {};
 	const commands: Record<string, any> = {};
 	const tools: Record<string, any> = {};
 	const entries: any[] = [];
 	const sent: string[] = [];
+	let branch: any[] = [];
 	const pi = {
 		on: (event: string, handler: any) => (handlers[event] = handler),
 		registerCommand: (name: string, def: any) => (commands[name] = def),
 		registerTool: (def: any) => (tools[def.name] = def),
-		appendEntry: (customType: string, data: any) => entries.push({ customType, data }),
+		// As the real API does, an appended entry is on the branch at once.
+		appendEntry: (customType: string, data: any) => (entries.push({ customType, data }), branch.push({ type: "custom", customType, data })),
 		sendUserMessage: (text: string) => sent.push(text),
 	};
 	handoff(pi as any);
 
-	const ask = (mode: string, prompt: string, messageType = "user") => handlers.before_agent_start({ messageType, prompt }, { mode });
+	const ask = (mode: string, prompt: string, messageType = "user") => handlers.before_agent_start({ messageType, prompt }, { mode, sessionManager: { getBranch: () => branch } });
 	assert.equal(ask("json", "add a theme option"), undefined, "a subagent's pi never gets the plan-first note");
 	handlers.session_start({}, { mode: "json" });
 	assert.equal(tools.handoff, undefined, "or the tool");
 	handlers.session_start({}, { mode: "tui", cwd });
 	assert.match(ask("tui", "add a theme option").message.content, /^Before you edit code/);
 	assert.equal(ask("tui", "Implement the plan in docs/plans/x.md. ..."), undefined, "a handoff kickoff already has its plan");
+	assert.deepEqual(entries, [{ customType: "handoff-plan", data: { path: "docs/plans/x.md" } }], "and records it");
+	ask("tui", "Implement the plan in docs/plans/x.md. ...");
+	assert.equal(entries.length, 1, "once");
 	assert.equal(ask("tui", "", "custom"), undefined, "nor a review-gate continuation");
+	entries.length = 0;
+	branch = [];
 
 	let percent = 10;
-	let branch: any[] = [];
 	const ctx = { cwd, sessionManager: { getBranch: () => branch }, getContextUsage: () => ({ percent }) };
 	await assert.rejects(tools.handoff.execute("1", { plan: "docs/plans/none.md" }, undefined, undefined, ctx), /no plan file/);
 	await assert.rejects(tools.handoff.execute("1", { plan: "docs/plans/x.md" }, undefined, undefined, ctx), /plan-reviewer/);
@@ -126,6 +132,67 @@ test("handoff stays in a clean session, and opens a new session with the plan wh
 	await commands.handoff.handler("docs/plans/none.md", cmdCtx);
 	assert.match(notices[0], /usage: \/handoff/);
 	assert.equal(kicked.length, 1);
+});
+
+test("handoff refuses a malformed plan it has not accepted; under PI_EVAL=1 print mode is gated and the build never leaves the session", async () => {
+	const saved = process.env.PI_EVAL;
+	const cwd = mkdtempSync(join(tmpdir(), "handoff-eval-"));
+	mkdirSync(join(cwd, "docs/plans"), { recursive: true });
+	writeFileSync(join(cwd, "docs/plans/bad.md"), "- [ ] 1. do it\n- [ ] 2. more - files: gone.ts - check: `true`\n");
+	writeFileSync(join(cwd, "docs/plans/x.md"), "- [ ] 1. do it - files: a.ts (new) - check: `true`\n\n## Success criteria\n- `true`\n");
+	const handlers: Record<string, any> = {};
+	const tools: Record<string, any> = {};
+	const sent: string[] = [];
+	const reviewer = { type: "message", message: { role: "toolResult", toolName: "subagent", isError: false, details: { results: [{ agent: "plan-reviewer", exitCode: 0, stopReason: "stop" }] } } };
+	const branch: any[] = [reviewer];
+	const pi = {
+		on: (event: string, handler: any) => (handlers[event] = handler),
+		registerCommand: () => {},
+		registerTool: (def: any) => (tools[def.name] = def),
+		appendEntry: (customType: string, data: any) => branch.push({ type: "custom", customType, data }),
+		sendUserMessage: (text: string) => sent.push(text),
+	};
+	handoff(pi as any);
+	const ask = (mode: string, prompt: string) => handlers.before_agent_start({ messageType: "user", prompt }, { mode, sessionManager: { getBranch: () => branch } });
+	const plans = () => branch.filter((e) => e.customType === "handoff-plan").map((e) => e.data.path);
+	try {
+		delete process.env.PI_EVAL;
+		assert.equal(ask("print", "add a theme option"), undefined, "print mode is not gated outside the eval");
+		handlers.session_start({}, { mode: "print", cwd });
+		assert.equal(tools.handoff, undefined);
+
+		process.env.PI_EVAL = "1";
+		assert.equal(ask("json", "add a theme option"), undefined, "json stays ungated, even under the eval");
+		handlers.session_start({}, { mode: "json", cwd });
+		assert.equal(tools.handoff, undefined);
+		assert.match(ask("print", "add a theme option").message.content, /^Before you edit code[\s\S]*- files: a\.ts, b\.ts \(new\) - check:/);
+		handlers.session_start({}, { mode: "print", cwd });
+		assert.ok(tools.handoff);
+		assert.equal(ask("print", "Implement the plan in docs/plans/x.md. This session starts empty"), undefined);
+		ask("print", "Implement the plan in docs/plans/x.md.");
+		assert.deepEqual(plans(), ["docs/plans/x.md"], "a kickoff records its plan once");
+
+		const ctx = { cwd, sessionManager: { getBranch: () => branch }, getContextUsage: () => ({ percent: 90 }) };
+		const run = (plan: string, newSession?: boolean) => tools.handoff.execute("1", { plan, newSession }, undefined, undefined, ctx);
+		await assert.rejects(run("docs/plans/bad.md"), (e: Error) => {
+			assert.equal(e.message, "docs/plans/bad.md is not in the plan format:\n- step 1 has no check\n- step 1 lists no files\n- step 2: gone.ts does not exist (mark a new file `gone.ts (new)`)\n- no success criteria commands\nFix the plan file and call handoff again");
+			return true;
+		});
+		assert.deepEqual(plans(), ["docs/plans/x.md"], "a refused plan is not recorded");
+		branch.push({ type: "custom", customType: "handoff-plan", data: { path: "docs/plans/bad.md" } });
+		assert.match((await run("docs/plans/bad.md")).content[0].text, /^Continue in this session/, "a plan the session already accepted is exempt");
+
+		// Full, compacted, and asked for a new session: the measured run still stays in one session.
+		branch.push({ type: "compaction" });
+		const stay = await run("docs/plans/x.md", true);
+		assert.equal(stay.terminate, undefined);
+		assert.match(stay.content[0].text, /^Continue in this session \(context 90%/);
+		handlers.agent_settled({ aborted: false });
+		assert.deepEqual(sent, [], "no queued /handoff");
+	} finally {
+		if (saved === undefined) delete process.env.PI_EVAL;
+		else process.env.PI_EVAL = saved;
+	}
 });
 
 test("steps counts a plan's ticked and open checkboxes", () => {

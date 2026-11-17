@@ -26,3 +26,5 @@ jobs:
       - run: brew install poppler pandoc ripgrep
       - run: npm ci
       - run: npm test
+      # The bench's session validation, outside the extensions/ glob npm test runs.
+      - run: node --test bench/agent/metrics.test.ts

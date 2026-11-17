@@ -1,0 +1,1 @@
+`range(start, end)` in `src/range.mjs` should return every integer from `start` up to but not including `end`, like Python's `range`: `range(0, 3)` is `[0, 1, 2]` and `range(2, 5)` is `[2, 3, 4]`. It drops the last number, so `range(0, 3)` gives `[0, 1]`. Fix it. `range(n, n)` and a `start` past `end` still give `[]`. Keep the existing tests passing.

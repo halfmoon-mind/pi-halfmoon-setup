@@ -3,8 +3,9 @@
  * writes a plan file under docs/plans/ and calls `handoff`, which reads the session's state and picks
  * where the build runs: a new session when this one is full or compacted (or the model says it is
  * messy), else here, through the worker subagent. The plan file carries the work across sessions, and
- * the review gate checks its ticked steps. Only interactive sessions get the tool, so a subagent's own
- * pi never plans or hands off. `/handoff <plan>` starts a plan in a new session by hand.
+ * the review gate checks its ticked steps. Only interactive sessions (and print mode under the eval,
+ * PI_EVAL=1) get the tool, so a subagent's own pi never plans or hands off. `/handoff <plan>` starts a
+ * plan in a new session by hand.
  */
 
 import { execFileSync } from "node:child_process";
@@ -13,6 +14,7 @@ import { dirname, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { gated, lintPlan } from "./checks.ts";
 
 export const FULL_PERCENT = 50;
 export const PLAN_ENTRY = "handoff-plan";
@@ -78,6 +80,8 @@ export function activePlan(branch: Entry[]): string | undefined {
 	return branch.findLast((e) => e.type === "custom" && e.customType === PLAN_ENTRY)?.data?.path;
 }
 
+const accepted = (branch: Entry[], path: string) => branch.some((e) => e.type === "custom" && e.customType === PLAN_ENTRY && e.data?.path === path);
+
 /** A plan reviewed by plan-reviewer in this session, or one this session already builds from (accepted earlier, or opened by /handoff). */
 export function reviewed(branch: Entry[], path: string): boolean {
 	return branch.some(
@@ -110,7 +114,7 @@ export const kickoff = (path: string) =>
 export const PLAN_FIRST = [
 	"Before you edit code for this message, decide whether it needs a plan.",
 	"- A quick fix is one change you can state in one sentence with no design choice: a typo, a one-line bug, a rename, a small isolated addition. Build it directly.",
-	"- Any other code change gets a plan before you edit code, even when it fits in one or two files: several requirements, a data or file format change, a migration, or a choice between designs. Read the code (the scout subagent for wide searches; scouts on separate areas run at once in one parallel subagent call), look up outside APIs or docs with web search if you have it, run the planner then plan-reviewer agents on what you found (the subagent tool; find it with tool_search if it is not listed), and write the reviewed plan to docs/plans/<short-name>.md with checkbox steps and a success criteria section of commands to run.",
+	"- Any other code change gets a plan before you edit code, even when it fits in one or two files: several requirements, a data or file format change, a migration, or a choice between designs. Read the code (the scout subagent for wide searches; scouts on separate areas run at once in one parallel subagent call), look up outside APIs or docs with web search if you have it, run the planner then plan-reviewer agents on what you found (the subagent tool; find it with tool_search if it is not listed), and write the reviewed plan to docs/plans/<short-name>.md: each checkbox step line ends with ``- files: a.ts, b.ts (new) - check: `<command>` ``, and `## Success criteria` has one `` - `<command>` `` line per command.",
 	"- If the plan touches three or more files, or changes a stored data format or a public interface, show the user a short summary and wait for their go-ahead. Otherwise go straight on.",
 	"- Then call the handoff tool with the plan file; it decides whether the build moves to a new session, and you follow what it returns.",
 	"- While building from a plan, tick each step ([x]) in the plan file once its check passes, call handoff between steps, and do not finish until every success criteria command passes; show their output.",
@@ -120,12 +124,18 @@ export default function (pi: ExtensionAPI) {
 	let pending: string | undefined; // the plan to open in a new session once this run settles
 
 	pi.on("before_agent_start", (event, ctx) => {
-		if (ctx.mode !== "tui" || event.messageType !== "user" || event.prompt.startsWith(KICKOFF_START)) return;
+		if (!gated(ctx.mode) || event.messageType !== "user") return;
+		if (event.prompt.startsWith(KICKOFF_START)) {
+			// A kickoff typed or passed in (pi -p under the eval) records its plan, as /handoff does, for the review gate.
+			const path = event.prompt.match(/^Implement the plan in (\S+?)\.(?:\s|$)/)?.[1];
+			if (path && !accepted(ctx.sessionManager.getBranch() as Entry[], path)) pi.appendEntry(PLAN_ENTRY, { path });
+			return;
+		}
 		return { message: { customType: "plan-first", content: PLAN_FIRST, display: false } };
 	});
 
 	pi.on("session_start", (_event, ctx) => {
-		if (ctx.mode !== "tui") return;
+		if (!gated(ctx.mode)) return;
 		ignorePlans(ctx.cwd);
 		pi.registerTool({
 			name: "handoff",
@@ -142,11 +152,18 @@ export default function (pi: ExtensionAPI) {
 			async execute(_id, params, _signal, _onUpdate, ctx: ExtensionContext) {
 				const path = params.plan.replace(/^@/, "");
 				if (!existsSync(resolve(ctx.cwd, path))) throw new Error(`no plan file at ${path}; write the plan there first`);
-				if (!reviewed(ctx.sessionManager.getBranch() as Entry[], path)) throw new Error(`${path} was not reviewed: run the plan-reviewer subagent on it, write the reviewed plan to ${path}, then call handoff again`);
+				const branch = ctx.sessionManager.getBranch() as Entry[];
+				if (!reviewed(branch, path)) throw new Error(`${path} was not reviewed: run the plan-reviewer subagent on it, write the reviewed plan to ${path}, then call handoff again`);
+				// A plan this session already accepted, or one /handoff opened, is exempt.
+				if (!accepted(branch, path)) {
+					const problems = lintPlan(ctx.cwd, readFileSync(resolve(ctx.cwd, path), "utf8"));
+					if (problems.length) throw new Error(`${path} is not in the plan format:\n- ${problems.join("\n- ")}\nFix the plan file and call handoff again`);
+				}
 				pi.appendEntry(PLAN_ENTRY, { path });
 
 				const s = signals(ctx.sessionManager.getBranch() as Entry[], ctx.getContextUsage()?.percent);
-				const reason = forcedReason(s) ?? (params.newSession ? "you judged this session messy" : undefined);
+				// ponytail: under the eval the build never moves, so the one-shot measured run stays in one session rather than relying on a queued post-settle /handoff.
+				const reason = process.env.PI_EVAL === "1" ? undefined : (forcedReason(s) ?? (params.newSession ? "you judged this session messy" : undefined));
 				if (reason) {
 					pending = path;
 					const text = `A new session opens after this turn and builds ${path} (${reason}). Stop here.`;

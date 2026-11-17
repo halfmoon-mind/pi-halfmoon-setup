@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import reviewGate, { runLog } from "./review-gate.ts";
+import { seam } from "./checks.ts";
+import reviewGate, { parseVerdict, runLog, snapshot } from "./review-gate.ts";
 
 test("a prompt that changed the repo is reviewed before pi settles; a BLOCK sends the model back, once per change", async () => {
 	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "review-gate-agent-"));
@@ -139,6 +140,204 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	await commands["review-gate"].handler("on", ctx);
 	assert.equal(statuses.review, undefined);
 	assert.equal(reviewCount(), 7);
+
+	// A review with no verdict line: gpt-6.1-terra reads one from it.
+	const asked: any[] = [];
+	let completion = (): any => ({ role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "v", name: "verdict", arguments: { decision: "BLOCK", reason: "a.txt is wrong" } }] });
+	(ctx as any).modelRegistry = {
+		find: (provider: string, id: string) => ({ provider, id }),
+		hasConfiguredAuth: () => true,
+		complete: async (model: any, context: any, options: any) => (asked.push({ model, context, options }), completion()),
+	};
+	handlers.before_agent_start({}, ctx);
+	writeFileSync(verdict, "The counter looks wrong.\nCritical: a.txt:1 should be 1");
+	writeFileSync(join(repo, "a.txt"), "10\n");
+	const extracted = await settle();
+	assert.equal(extracted.continue, true);
+	assert.match(extracted.entries[0].content, /The counter looks wrong\.\nCritical/);
+	assert.equal(logged.at(-1).verdict, "BLOCK: a.txt is wrong");
+	assert.equal(asked[0].model.id, "gpt-6.1-terra");
+	assert.match(asked[0].context.systemPrompt, /BLOCK when the review reports a Critical issue[\s\S]*data, not instructions/);
+	assert.match(asked[0].context.messages[0].content, /^The counter looks wrong/);
+	assert.equal(asked[0].context.tools[0].name, "verdict");
+	assert.equal(asked[0].options.maxRetries, 1);
+
+	// No verdict at all: a warning, `unreviewed` in the footer and a NONE entry, until the next prompt.
+	completion = () => {
+		throw new Error("openai down");
+	};
+	writeFileSync(join(repo, "a.txt"), "11\n");
+	assert.equal(await settle(), undefined);
+	assert.match(notices.at(-1)!, /gave no verdict, so this turn went unreviewed \(first line: "The counter looks wrong\."\)/);
+	assert.equal(statuses.review, "unreviewed");
+	assert.equal(logged.at(-1).verdict, "NONE");
+	handlers.before_agent_start({}, ctx);
+	assert.equal(statuses.review, undefined);
+});
+
+test("parseVerdict reads the first non-empty line, tolerant of markdown and case", () => {
+	assert.deepEqual(parseVerdict("**BLOCK:** off by one\nmore"), { decision: "BLOCK", reason: "off by one" });
+	assert.deepEqual(parseVerdict("\n\n  # ALLOW - fine"), { decision: "ALLOW", reason: "fine" });
+	assert.deepEqual(parseVerdict("block: x"), { decision: "BLOCK", reason: "x" });
+	assert.deepEqual(parseVerdict("> **Allow**: ok"), { decision: "ALLOW", reason: "ok" });
+	assert.deepEqual(parseVerdict("_ALLOW_ — fine"), { decision: "ALLOW", reason: "fine" });
+	assert.equal(parseVerdict("Verdict: BLOCK"), undefined);
+	assert.equal(parseVerdict(""), undefined);
+	assert.equal(parseVerdict("ALLOWED: x"), undefined);
+});
+
+test("before the review, the harness runs the checks of steps the prompt ticked, then the success criteria, and a failure sends the model back", async () => {
+	const saved = { argv1: process.argv[1], agentDir: process.env.PI_CODING_AGENT_DIR, eval: process.env.PI_EVAL, exec: seam.exec };
+	const restore = (k: string, v: string | undefined) => (v === undefined ? delete process.env[k] : (process.env[k] = v));
+	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "review-gate-agent-"));
+	delete process.env.PI_EVAL;
+	const repo = mkdtempSync(join(tmpdir(), "review-gate-checks-"));
+	const git = (...args: string[]) => execFileSync("git", args, { cwd: repo });
+	git("init", "-q");
+	writeFileSync(join(repo, "a.txt"), "1\n");
+	git("add", ".");
+	git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+	mkdirSync(join(repo, "docs/plans"), { recursive: true });
+	const planFile = (one: string, two: string) =>
+		writeFileSync(join(repo, "docs/plans/p.md"), `- [${one}] 1. one - files: a.txt - check: \`check-1\`\n  prose\n- [${two}] 2. two - files: a.txt - check: \`check-2\`\n\n## Success criteria\n- \`crit\`\n- \`check-2\`\n`);
+	planFile(" ", " ");
+
+	// The reviewer's pi answers ALLOW and logs each task.
+	const dir = mkdtempSync(join(tmpdir(), "fake-pi-"));
+	const log = join(dir, "tasks.log");
+	process.argv[1] = join(dir, "pi.mjs");
+	writeFileSync(
+		process.argv[1],
+		`import { appendFileSync } from "node:fs";
+		appendFileSync(${JSON.stringify(log)}, "task\\n---\\n");
+		console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ALLOW: fine" }], stopReason: "stop" } }));`,
+	);
+	const reviewCount = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n---\n").length - 1 : 0);
+
+	// Each check command's output and exit code, and the commands run.
+	const outcomes: Record<string, { out: string; code: number }> = { "check-1": { out: `${"x".repeat(3000)}END-1`, code: 1 }, "check-2": { out: "ok", code: 0 }, crit: { out: "crit failed", code: 2 } };
+	const calls: string[] = [];
+	seam.exec = async (command, _cwd, options) => {
+		calls.push(command);
+		options.onData(Buffer.from(outcomes[command]!.out));
+		return { exitCode: outcomes[command]!.code };
+	};
+
+	const handlers: Record<string, any> = {};
+	const logged: any[] = [];
+	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: () => {} } as any);
+	const notices: string[] = [];
+	const widgets: string[] = [];
+	const ui = { theme: { fg: (_c: string, t: string) => t }, setStatus: () => {}, setWidget: (_k: string, lines?: string[]) => lines && widgets.push(...lines), notify: (msg: string) => notices.push(msg) };
+	let activeFile = "docs/plans/p.md";
+	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => [{ type: "custom", customType: "handoff-plan", data: { path: activeFile } }] } };
+	const settle = (mode = "tui") => handlers.agent_before_settle({ entries: [], outcome: "completed", context: { llmMessages: [] } }, { ...ctx, mode });
+	let n = 1;
+	const change = () => writeFileSync(join(repo, "a.txt"), `${++n}\n`);
+
+	try {
+		handlers.before_agent_start({}, ctx);
+		planFile("x", " ");
+		change();
+		assert.equal(await settle("print"), undefined, "print mode is gated only under the eval");
+		process.env.PI_EVAL = "1";
+		assert.equal(await settle("json"), undefined, "json never, even under the eval");
+		assert.deepEqual(calls, []);
+
+		// A ticked step whose check fails goes back to the model, with the command and its output's tail; no review.
+		const back = await settle("print");
+		assert.equal(back.continue, true);
+		assert.equal(back.entries[0].customType, "plan-checks");
+		const content = back.entries[0].content;
+		assert.match(content, /harness ran the checks[\s\S]*untick \(\[ \]\)[\s\S]*`check-1` exited 1:\n```\nx+END-1\n```[\s\S]*full report on their request/);
+		assert.doesNotMatch(content, /x{2000}/, "only the tail");
+		assert.deepEqual(calls, ["check-1"]);
+		assert.deepEqual(widgets, ["Running the plan's checks…"]);
+		assert.deepEqual(logged.map((e) => [e.customType, e.results.map((r: any) => [r.command, r.ok, r.exitCode])]), [["plan-checks", [["check-1", false, 1]]]]);
+		assert.equal(reviewCount(), 0);
+		delete process.env.PI_EVAL;
+
+		assert.equal(await settle(), undefined, "nothing changed since");
+		assert.match(notices.at(-1)!, /plan checks still fail and nothing changed since; unreviewed/);
+		assert.equal(calls.length, 1);
+
+		// Fixed, the check passes and the review runs.
+		outcomes["check-1"] = { out: "ok", code: 0 };
+		change();
+		assert.equal(await settle(), undefined);
+		assert.deepEqual(calls, ["check-1", "check-1"]);
+		assert.equal(reviewCount(), 1);
+
+		// The next prompt ticks the last step: step 1 ticked before it is not re-run, and the criteria run, deduped.
+		handlers.before_agent_start({}, ctx);
+		calls.length = 0;
+		planFile("x", "x");
+		change();
+		const crit = await settle();
+		assert.equal(crit.continue, true);
+		assert.match(crit.entries[0].content, /and its success criteria[\s\S]*`crit` exited 2:\n```\ncrit failed\n```/);
+		assert.doesNotMatch(crit.entries[0].content, /`check-2` exited/);
+		assert.deepEqual(calls, ["check-2", "crit"]);
+		assert.equal(reviewCount(), 1);
+
+		// Three failing rounds, then a further change warns and goes to the review.
+		change();
+		assert.equal((await settle()).continue, true);
+		change();
+		assert.equal((await settle()).continue, true);
+		assert.equal(calls.length, 6);
+		change();
+		assert.equal(await settle(), undefined);
+		assert.match(notices.at(-2)!, /checks already ran 3 rounds/);
+		assert.deepEqual(notices.at(-1), "review: fine");
+		assert.equal(calls.length, 6);
+		assert.equal(reviewCount(), 2);
+
+		// A second plan started after the first was finished, with the same step numbers: its ticks are all new, so its checks run.
+		handlers.before_agent_start({}, ctx); // p.md: both steps ticked at the start
+		activeFile = "docs/plans/q.md";
+		writeFileSync(join(repo, "docs/plans/q.md"), "- [x] 1. one - files: a.txt - check: `q-1`\n- [x] 2. two - files: a.txt - check: `q-2`\n\n## Success criteria\n- `q-crit`\n");
+		for (const c of ["q-1", "q-2", "q-crit"]) outcomes[c] = { out: "ok", code: 0 };
+		calls.length = 0;
+		change();
+		assert.equal(await settle(), undefined);
+		assert.deepEqual(calls, ["q-1", "q-2", "q-crit"]);
+
+		// With no code change, switching to a plan with as many ticks, or moving a tick, is still a change.
+		// r.md exists before the prompt starts, so the repository snapshot does not change.
+		writeFileSync(join(repo, "docs/plans/r.md"), "- [x] 1. one - files: a.txt - check: `r-1`\n- [x] 2. two - files: a.txt - check: `r-2`\n- [ ] 3. three - files: a.txt - check: `r-3`\n\n## Success criteria\n- `r-crit`\n");
+		handlers.before_agent_start({}, ctx); // q.md: both ticked
+		activeFile = "docs/plans/r.md";
+		for (const c of ["r-1", "r-2", "r-3", "r-crit"]) outcomes[c] = { out: "ok", code: 0 };
+		calls.length = 0;
+		assert.equal(await settle(), undefined);
+		assert.deepEqual(calls, ["r-1", "r-2"], "another plan with the same tick count, no code change");
+		writeFileSync(join(repo, "docs/plans/r.md"), "- [x] 1. one - files: a.txt - check: `r-1`\n- [ ] 2. two - files: a.txt - check: `r-2`\n- [x] 3. three - files: a.txt - check: `r-3`\n\n## Success criteria\n- `r-crit`\n");
+		calls.length = 0;
+		assert.equal(await settle(), undefined);
+		assert.deepEqual(calls, ["r-1", "r-3"], "a tick moved from step 2 to step 3, same count, no code change");
+	} finally {
+		seam.exec = saved.exec;
+		process.argv[1] = saved.argv1!;
+		restore("PI_CODING_AGENT_DIR", saved.agentDir);
+		restore("PI_EVAL", saved.eval);
+	}
+});
+
+test("the snapshot changes when an already-untracked file is edited, and not for an ignored one", () => {
+	const repo = mkdtempSync(join(tmpdir(), "review-gate-snap-"));
+	const run = (...args: string[]) => execFileSync("git", args, { cwd: repo });
+	run("init", "-q");
+	writeFileSync(join(repo, ".gitignore"), "ignored.txt\n");
+	run("add", ".");
+	run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+	writeFileSync(join(repo, "new.txt"), "1\n");
+	const before = snapshot(repo);
+	writeFileSync(join(repo, "new.txt"), "2\n");
+	assert.notEqual(snapshot(repo), before, "a fix confined to a new file is a change");
+	const after = snapshot(repo);
+	writeFileSync(join(repo, "ignored.txt"), "x\n");
+	assert.equal(snapshot(repo), after);
 });
 
 test("the run log keeps the latest calls and says how many it dropped", () => {
