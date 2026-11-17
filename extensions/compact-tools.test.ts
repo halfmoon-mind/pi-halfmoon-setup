@@ -22,6 +22,22 @@ test("pi's looking-around tools and bash are all replaced", () => {
 	assert.deepEqual(tools.bash.parameters.required, ["command"]);
 });
 
+test("bash times out after 600s unless the call gives its own timeout", async () => {
+	const tools: Record<string, any> = {};
+	compactTools({ registerTool: (t: any) => (tools[t.name] = t), on: () => {} } as any);
+	const LIVE = Symbol.for("pi-halfmoon-setup/sandbox-exec");
+	const prev = (globalThis as any)[LIVE];
+	const seen: unknown[] = [];
+	(globalThis as any)[LIVE] = async (_c: string, _cwd: string, o: any) => (seen.push(o.timeout), { exitCode: 0 });
+	try {
+		await tools.bash.execute("a", { command: "true" }, undefined, undefined, undefined);
+		await tools.bash.execute("b", { command: "true", timeout: 1200 }, undefined, undefined, undefined);
+	} finally {
+		(globalThis as any)[LIVE] = prev;
+	}
+	assert.deepEqual(seen, [600, 1200]);
+});
+
 test("calls made together share one line on the first row; the rest draw nothing unless expanded or failed", () => {
 	groupCalls([
 		{ type: "toolCall", id: "a", name: "read", arguments: { path: "/x/router.ts" } },

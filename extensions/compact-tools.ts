@@ -139,13 +139,22 @@ export default function (pi: ExtensionAPI) {
 	}
 	// bash runs in sandbox.ts's OS sandbox; the call keeps the command as the model wrote it.
 	const bash = createBashToolDefinition(process.cwd(), { operations: sandboxedBash });
+	// pi's bash has no default timeout, so a command that never ends (a grep from ~) held the turn until Esc.
+	const TIMEOUT = 600;
 	const parameters = Type.Object({
 		...bash.parameters.properties,
+		timeout: Type.Optional(Type.Number({ description: `Timeout in seconds (default ${TIMEOUT}); give a larger one for a command that needs longer` })),
 		description: Type.Optional(
 			Type.String({ description: "What this command does, in 5-10 words, in the language the user writes in. Shown to the user in place of the command." }),
 		),
 	});
-	pi.registerTool({ ...bash, parameters, renderCall: shortCallWhenCollapsed(bash.renderCall!), renderResult: hideWhenCollapsed(bash.renderResult!) });
+	pi.registerTool({
+		...bash,
+		parameters,
+		execute: (id, params, ...rest) => bash.execute(id, { ...params, timeout: params.timeout ?? TIMEOUT }, ...rest),
+		renderCall: shortCallWhenCollapsed(bash.renderCall!),
+		renderResult: hideWhenCollapsed(bash.renderResult!),
+	});
 
 	pi.on("message_update", (e) => groupCalls(e.message.role === "assistant" ? e.message.content : undefined));
 	pi.on("message_end", (e) => groupCalls(e.message.role === "assistant" ? e.message.content : undefined));
