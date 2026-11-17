@@ -72,7 +72,7 @@ pi --model router/auto
 
 실행 중에는 `/model`로 `router/auto`를 선택할 수도 있습니다. Laya를 사용하는 경우 `/laya`로 상태를 확인합니다.
 
-시작할 때 이 패키지에 필요한데 이 머신에 없는 것(`claude` CLI나 그 로그인, `openai` 인증, poppler, pandoc, LibreOffice)을 경고하고, 첫 프롬프트 전까지 입력창 위에 워크플로 명령어를 한 줄로 보여 줍니다. pi가 로드한 스킬·확장 목록을 숨기려면 머신마다 `~/.pi/agent/settings.json`에 `"quietStartup": "header"`를 설정하세요. thinking 블록을 `Ctrl+T`를 누를 때만 펼치려면 같은 파일에 `"hideThinkingBlock": true`도 넣으세요. 작업 방향은 tool 호출만 봐도 알 수 있습니다. 이 키를 설정하기 전까지는 시작할 때 경고가 뜹니다. thinking을 계속 보면서 경고만 끄려면 `false`로 설정하세요.
+시작할 때 이 패키지에 필요한데 이 머신에 없는 것(`claude` CLI나 그 로그인, `openai` 인증, poppler, pandoc, LibreOffice)을 경고하고, 첫 프롬프트 전까지 입력창 위에 워크플로 명령어를 한 줄로 보여 줍니다. pi가 로드한 스킬·확장 목록을 숨기려면 머신마다 `~/.pi/agent/settings.json`에 `"quietStartup": "header"`를 설정하세요. thinking 블록을 `Ctrl+T`를 누를 때만 펼치려면 같은 파일에 `"hideThinkingBlock": true`도 넣으세요. 작업 방향은 tool 호출만 봐도 알 수 있습니다. 이 키를 설정하기 전까지는 시작할 때 경고가 뜹니다. thinking을 계속 보면서 경고만 끄려면 `false`로 설정하세요. 접힌 thinking 블록은 pi의 `Thinking...` 줄조차 그리지 않습니다. 접힌 bash 호출은 명령의 첫 줄을 보여 주되, 세션 디렉터리로 들어가는 맨 앞의 `cd`는 뺍니다. `Ctrl+O`를 누르면 작성된 그대로 보입니다.
 
 ## 사용 예시
 
@@ -92,7 +92,7 @@ pi 입력창에서 프롬프트 명령어 뒤에 작업을 적습니다.
 | `/implement-and-review` | worker → reviewer → worker | 구현, 리뷰, 리뷰의 Critical 항목 수정 |
 | `/deep` | deep-worker (에스컬레이션 시 → worker) | 논리 중심 목표 하나를 GPT-6.1 Sol로 처리하고, 근거로 정할 수 없는 결정은 worker에게 넘김 |
 
-프롬프트는 `subagent` 도구의 `chain` 모드를 사용하고 `{previous}`로 앞 단계의 출력을 전달합니다. 도구 자체는 단일 에이전트 실행(`agent` + `task`), 병렬 실행(`tasks`), 순차 실행(`chain`)을 지원합니다.
+프롬프트는 `subagent` 도구의 `chain` 모드를 사용하고 `{previous}`로 앞 단계의 출력을 전달합니다. 도구 자체는 단일 에이전트 실행(`agent` + `task`), 병렬 실행(`tasks`), 순차 실행(`chain`)을 지원합니다. 접힌 서브에이전트 실행은 에이전트마다 한 줄입니다. 실행 중에는 지금 하는 tool 호출을, 끝나면 답의 첫 줄(실패하면 오류)을, 아직 시작하지 않은 chain 단계는 `waiting`을 보여 줍니다. `Ctrl+O`를 누르면 각 작업, tool 호출, 전체 출력이 보입니다.
 
 ### 계획 먼저, 그리고 handoff
 

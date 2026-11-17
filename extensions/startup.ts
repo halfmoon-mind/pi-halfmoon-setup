@@ -1,7 +1,8 @@
 /**
  * The first screen: until the first prompt, a line above the editor names this package's workflow
  * commands; and at startup, a warning names each tool or login the package needs that this machine
- * lacks, with how to fix it, and suggests hideThinkingBlock until the user sets it either way. A
+ * lacks, with how to fix it, and suggests hideThinkingBlock until the user sets it either way; and
+ * folded thinking draws no `Thinking...` line. A
  * machine with everything set up sees no warning. laya-serve is not
  * checked here: router.ts already says when it cannot start.
  */
@@ -37,6 +38,8 @@ export default function (pi: ExtensionAPI) {
 	let checked = false; // once per pi: /new and /resume would repeat the same warnings
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
+		// pi draws a folded thinking run as "Thinking...", which says nothing; a blank label draws nothing (Ctrl+T still shows thinking).
+		ctx.ui.setHiddenThinkingLabel("");
 		// A resumed session is already past its first prompt.
 		if (!ctx.sessionManager.getEntries().some((entry) => entry.type === "message")) ctx.ui.setWidget("workflows", [ctx.ui.theme.fg("dim", WORKFLOWS)]);
 		if (checked) return;

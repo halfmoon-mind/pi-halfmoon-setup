@@ -72,7 +72,7 @@ pi --model router/auto
 
 You can also pick `router/auto` with `/model` while pi is running. If you use Laya, check its state with `/laya`.
 
-At startup, pi warns about anything this package needs that the machine lacks (the `claude` CLI or its login, `openai` credentials, poppler, pandoc, LibreOffice), and a line above the editor lists the workflow commands until the first prompt. To hide pi's list of loaded skills and extensions, set `"quietStartup": "header"` in `~/.pi/agent/settings.json` on each machine. To keep thinking blocks folded until you press `Ctrl+T`, set `"hideThinkingBlock": true` there too; the tool calls already show where the work is heading. Until that key is set, startup warns about it; set it to `false` to keep thinking shown and drop the warning.
+At startup, pi warns about anything this package needs that the machine lacks (the `claude` CLI or its login, `openai` credentials, poppler, pandoc, LibreOffice), and a line above the editor lists the workflow commands until the first prompt. To hide pi's list of loaded skills and extensions, set `"quietStartup": "header"` in `~/.pi/agent/settings.json` on each machine. To keep thinking blocks folded until you press `Ctrl+T`, set `"hideThinkingBlock": true` there too; the tool calls already show where the work is heading. Until that key is set, startup warns about it; set it to `false` to keep thinking shown and drop the warning. A folded thinking block draws nothing, not even pi's `Thinking...` line. Collapsed, a bash call shows its command's first line without a leading `cd` into the session's directory; `Ctrl+O` shows it as written.
 
 ## Usage
 
@@ -92,7 +92,7 @@ In pi's input box, type a prompt command followed by the task.
 | `/implement-and-review` | worker → reviewer → worker | Implementation, review, and fixes for the review's Critical issues |
 | `/deep` | deep-worker (→ worker if it escalates) | One logic-heavy goal on GPT-6.1 Sol, handed to the worker when evidence cannot settle a decision |
 
-The prompts use the `subagent` tool's `chain` mode and pass each step's output to the next with `{previous}`. The tool itself supports a single agent (`agent` + `task`), parallel runs (`tasks`), and sequential runs (`chain`).
+The prompts use the `subagent` tool's `chain` mode and pass each step's output to the next with `{previous}`. The tool itself supports a single agent (`agent` + `task`), parallel runs (`tasks`), and sequential runs (`chain`). Collapsed, a subagent run is one line per agent: the tool call it is on while it runs, the first line of its answer (or its error) once done, and `waiting` for chain steps not started yet. `Ctrl+O` shows each task, its tool calls and its full output.
 
 ### Plan first and handoff
 

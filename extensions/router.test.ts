@@ -250,11 +250,12 @@ test("/laya off routes to the newest Opus without classifying or warning; /laya 
 
 test("a process started with spawnWithLifeline does not outlive a SIGKILLed parent", async (t) => {
 	// Stand-in for pi: starts `sleep` the way pi starts laya-serve, prints its pid, then idles.
+	// The pid goes out as a string: under FORCE_COLOR, console.log colors a number, and Number() of that is NaN.
 	const routerUrl = JSON.stringify(new URL("./router.ts", import.meta.url).href);
 	const parent = spawn(
 		process.execPath,
 		["--import", new URL("./test-hooks.ts", import.meta.url).pathname, "--input-type=module", "-e", `import { spawnWithLifeline } from ${routerUrl};
-			console.log(spawnWithLifeline("sleep", ["300"], process.env).pid); setInterval(() => {}, 1e6);`],
+			console.log(String(spawnWithLifeline("sleep", ["300"], process.env).pid)); setInterval(() => {}, 1e6);`],
 		{ stdio: ["ignore", "pipe", "inherit"] },
 	);
 	// A failed assert must not leave the idling parent behind: it would hold the file until the 60s timeout.

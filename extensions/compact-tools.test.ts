@@ -1,6 +1,10 @@
 // Run: node --import ./extensions/test-hooks.ts --test extensions/compact-tools.test.ts
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { stripVTControlCharacters } from "node:util";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import compactTools, { compact, groupCalls, hideWhenCollapsed, shortCommand, summary } from "./compact-tools.ts";
 import pdfRead from "./pdf-read.ts";
@@ -61,6 +65,25 @@ test("a collapsed bash call shows the command's first line, cut short, and how m
 	assert.equal(shortCommand("ls -la"), "ls -la");
 	assert.equal(shortCommand("cd x; python3 - <<'EOF'\nprint(1)\nEOF\n"), "cd x; python3 - <<'EOF' … (+2 lines)");
 	assert.equal(shortCommand("a".repeat(120)), `${"a".repeat(100)}…`);
+});
+
+test("a collapsed bash call drops a leading cd into the session's directory, and only that one", () => {
+	const cwd = join(homedir(), "proj");
+	assert.equal(shortCommand(`cd ${cwd}; sed -n 1,17p a.ts`, cwd), "sed -n 1,17p a.ts");
+	assert.equal(shortCommand(`cd "${cwd}" && git status`, cwd), "git status");
+	assert.equal(shortCommand("cd ~/proj && ls", cwd), "ls");
+	assert.equal(shortCommand(`cd ${cwd}/sub && ls`, cwd), `cd ${cwd}/sub && ls`, "another dir says where it runs");
+	assert.equal(shortCommand(`cd ${cwd} && python3 - <<'EOF'\nprint(1)\nEOF`, cwd), "python3 - <<'EOF' … (+2 lines)");
+
+	// Expanded, the call shows the command as written.
+	initTheme();
+	const tools: Record<string, any> = {};
+	compactTools({ registerTool: (t: any) => (tools[t.name] = t), on: () => {} } as any);
+	const call = (expanded: boolean) =>
+		stripVTControlCharacters(tools.bash.renderCall({ command: `cd ${cwd}; ls` }, theme, { expanded, cwd, state: {}, executionStarted: false }).render(200).join("\n"));
+	assert.ok(call(true).includes(`cd ${cwd}; ls`));
+	assert.ok(!call(false).includes("cd "));
+	assert.match(call(false), /\$ ls/);
 });
 
 test("a read wrapped by another module copy (pi loads pdf-read.ts with its own) still joins the groups", async () => {

@@ -1,7 +1,9 @@
 // Looking around (read, grep, find, ls) shows just its call line, and calls made together share one
-// line ("read 3 · grep 1  router.ts, footer.ts, …"). bash shows only its command's first line. ctrl+o
-// shows everything, and errors always show. edit and write keep pi's display: their diffs are the work.
+// line ("read 3 · grep 1  router.ts, footer.ts, …"). bash shows only its command's first line,
+// without a leading `cd` into the session's directory. ctrl+o shows everything, and errors always
+// show. edit and write keep pi's display: their diffs are the work.
 // read is overridden in pdf-read.ts, so it wraps itself there with compact().
+import { homedir } from "node:os";
 import { basename } from "node:path";
 import {
 	createBashToolDefinition,
@@ -108,9 +110,13 @@ export function hideWhenCollapsed<R extends RenderResult>(render: R): R {
 	}) as R;
 }
 
-/** The command's first line, cut at COMMAND_CHARS, with how many lines are hidden. */
-export function shortCommand(command: string): string {
-	const lines = command.trim().split("\n");
+/** The command's first line without a leading `cd` into cwd, cut at COMMAND_CHARS, with how many lines are hidden. */
+export function shortCommand(command: string, cwd?: string): string {
+	let text = command.trim();
+	// The model often starts with `cd <cwd>; ` or `cd <cwd> && `, which only repeats where bash already runs.
+	const cd = /^cd\s+(["']?)(.+?)\1\s*(?:;|&&)\s*/.exec(text);
+	if (cd && cwd && [cwd, cwd.replace(homedir(), "~")].includes(cd[2]!)) text = text.slice(cd[0].length);
+	const lines = text.split("\n");
 	let first = lines[0]!;
 	if (first.length > COMMAND_CHARS) first = `${first.slice(0, COMMAND_CHARS)}…`;
 	return lines.length > 1 ? `${first} … (+${lines.length - 1} lines)` : first;
@@ -118,7 +124,7 @@ export function shortCommand(command: string): string {
 
 function shortCallWhenCollapsed(render: RenderCall): RenderCall {
 	return (args, theme, context) =>
-		render(context.expanded || typeof args?.command !== "string" ? args : { ...args, command: shortCommand(args.command) }, theme, context);
+		render(context.expanded || typeof args?.command !== "string" ? args : { ...args, command: shortCommand(args.command, context.cwd) }, theme, context);
 }
 
 export default function (pi: ExtensionAPI) {
