@@ -1,0 +1,1 @@
+Give the `Cache` in `src/cache.mjs` a size limit with least-recently-used eviction and an optional time-to-live, following the plan in docs/plans/plan-lru-ttl.md. (A plan-kind task: the run's prompt is the handoff kickoff for that plan, not this file.)

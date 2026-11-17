@@ -1,0 +1,1 @@
+`cartTotal([{ price: 0.29, qty: 1 }])` in `src/cart.mjs` returns 28 cents instead of 29. Fix it. Every place in `src/` that turns a dollar amount (at most two decimals) into cents must give the exact cents, not only the cart. Keep the existing tests passing.

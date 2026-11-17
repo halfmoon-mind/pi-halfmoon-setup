@@ -1,0 +1,6 @@
+// Integers from start up to, not including, end.
+export function range(start, end) {
+	const out = [];
+	for (let i = start; i < end; i++) out.push(i);
+	return out;
+}

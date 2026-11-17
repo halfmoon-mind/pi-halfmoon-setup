@@ -10,6 +10,7 @@ tasks/<id>/task.md        the prompt
 tasks/<id>/repo/          the fixture: plain .mjs, src/ and test/*.test.mjs, no dependencies
 tasks/<id>/hidden.test.mjs the grading test, copied into the repo root after the run
 tasks/<id>/plan.md        plan-kind tasks only: the prompt is the handoff kickoff for it
+tasks/<id>/solution/       the reference fix: src files overlaying repo/, checked by --dry, never copied into a run
 ```
 
 ## Check the fixtures
@@ -18,7 +19,20 @@ tasks/<id>/plan.md        plan-kind tasks only: the prompt is the handoff kickof
 node --import ./extensions/test-hooks.ts bench/agent/run.ts --dry
 ```
 
-Per task, in a fresh temp copy: the visible tests pass, the hidden test fails (a timeout or spawn error is a FAIL, not the expected failure), and a plan lints clean. It makes no model calls, but it imports the installed pi packages through `extensions/test-hooks.ts` (the managed install under `~/.pi/agent/install`).
+Per task, in a fresh temp copy: the visible tests pass, the hidden test fails (a timeout or spawn error is a FAIL, not the expected failure), and a plan lints clean. Then, in a second fresh copy with `solution/` overlaid, the visible and hidden tests pass; a task without a `solution/` FAILs. It makes no model calls, but it imports the installed pi packages through `extensions/test-hooks.ts` (the managed install under `~/.pi/agent/install`).
+
+## Tasks for a weak model
+
+The first eight tasks were passed by haiku without the gate, so these six are built to catch what a weak model skips. Each rule the hidden test checks is written in the task (or plan); only the visible tests leave it out.
+
+| Task | What tempts a weak model |
+|---|---|
+| `root-cause-sibling` | Patching only `cartTotal`, the caller the report names, instead of the shared `toCents` |
+| `csv-quoted` | Stopping at the one quoted case the visible test shows |
+| `async-pool` | One call too many in flight, or starting items after a rejection |
+| `many-requirements` | Skipping some of the 9 rules, or their order |
+| `business-days` | Holidays, a negative n, n = 0 on a weekend |
+| `plan-lru-ttl` | `get` extending the TTL, `size` counting expired entries, evicting a live entry while an expired one remains |
 
 ## A real run
 

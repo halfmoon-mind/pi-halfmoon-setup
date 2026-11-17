@@ -53,6 +53,18 @@ if (args.dry) {
 		if (hidden.error || hidden.signal) problems.push(`the hidden test did not run${ran(hidden)}`);
 		else if (hidden.status === 0) problems.push("the hidden test passes before any fix");
 		if (hasPlan(id)) problems.push(...lintPlan(cwd, readFileSync(join(TASKS, id, "plan.md"), "utf8")).map((p) => `plan: ${p}`));
+		const solution = join(TASKS, id, "solution");
+		if (!existsSync(solution)) problems.push("no reference solution");
+		else {
+			// The agent never sees solution/: a real run copies repo/ only.
+			const { cwd: solved } = fresh(id);
+			cpSync(solution, solved, { recursive: true });
+			const sv = nodeTest(solved);
+			if (sv.status !== 0) problems.push(`the reference solution fails the visible tests${ran(sv)}`);
+			copyFileSync(join(TASKS, id, "hidden.test.mjs"), join(solved, "hidden.test.mjs"));
+			const sh = nodeTest(solved, "hidden.test.mjs");
+			if (sh.status !== 0) problems.push(`the reference solution fails the hidden test${ran(sh)}`);
+		}
 		console.log(problems.length ? `FAIL ${id}: ${problems.join("; ")}` : `OK ${id}`);
 		failed ||= problems.length > 0;
 	}
