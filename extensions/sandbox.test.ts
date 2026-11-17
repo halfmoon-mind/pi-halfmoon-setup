@@ -1149,9 +1149,10 @@ test("offer: a blocked path outside the writable dirs proposes its Flutter/Dart 
 		symlinkSync(outside, join(H, "fvm"));
 		symlinkSync(join(H, ".ssh"), join(H, ".flutter"));
 		symlinkSync(agent, join(H, ".dartServer"));
+		symlinkSync(join(H, ".flutter-devtools"), join(H, ".flutter-devtools")); // a loop drops only itself
 		const linked = dirs(`Error: EPERM: operation not permitted, open '${H}/.pub-cache/x'`)!;
 		assert.ok(linked.includes(join(H, ".pub-cache")));
-		for (const d of [join(H, "fvm"), real(outside), join(H, ".flutter"), join(H, ".ssh"), join(H, ".dartServer"), real(agent)]) assert.ok(!linked.includes(d), d);
+		for (const d of [join(H, "fvm"), real(outside), join(H, ".flutter"), join(H, ".ssh"), join(H, ".dartServer"), join(H, ".flutter-devtools"), real(agent)]) assert.ok(!linked.includes(d), d);
 		// A canonical target with a glob char is refused.
 		mkdirSync(join(H, "we[ird"));
 		symlinkSync(join(H, "we[ird"), join(H, ".gradle"));
@@ -1183,6 +1184,23 @@ test("allow dirs: with a UI, a write blocked outside the writable dirs offers it
 		assert.equal(await s.gate("write", { path: join(D, "f") }), undefined, "pi's write tool follows");
 		assert.deepEqual(await s.run(G(D)), { exitCode: 0, out: "ok\n" });
 		assert.equal(u.selects.length, 1);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("allow dirs: on Linux, where the runtime mounts only existing write roots, a missing allowed dir is made first", async () => {
+	const u = fakeUI();
+	u.pick = (o) => o[0];
+	seam.platform = () => "linux";
+	const s = await escalating({ ui: u.ui });
+	const D = join(HOME, unique(".pi-sandbox-test"));
+	made.push(D);
+	try {
+		assert.equal(existsSync(D), false);
+		assert.equal((await s.run(G(D))).exitCode, 0);
+		assert.ok(existsSync(D));
 	} finally {
 		await s.shutdown();
 		restore();

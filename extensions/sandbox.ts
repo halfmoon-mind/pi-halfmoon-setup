@@ -8,7 +8,7 @@
 // A write blocked outside the writable dirs first offers that tool's dirs (session or always; re-run sandboxed), even when the command exits 0.
 // Not covered: this file itself failing to load, trusted extensions, user-typed !commands.
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -259,8 +259,15 @@ export function offer(lines: string[], p: Policy): { path: string; dirs: string[
 				let dirs: string[];
 				const bundle = BUNDLES.find((b) => b.some((d) => within(join(home, d), r)));
 				if (bundle) {
-					// A symlinked member is dropped: merge() would resolve it on restart, maybe somewhere else.
-					dirs = bundle.map((d) => [join(home, d), real(join(home, d))]).filter(([s, d]) => fold(s) === fold(d!)).map(([, d]) => d!);
+					// A symlinked member is dropped: merge() would resolve it on restart, maybe somewhere else; a looping one too.
+					dirs = bundle.flatMap((d) => {
+						const s = join(home, d);
+						try {
+							return fold(real(s)) === fold(s) ? [real(s)] : [];
+						} catch {
+							return [];
+						}
+					});
 				} else {
 					const parts = relative(home, r).split(sep);
 					const [a = "", b = ""] = parts.map((x) => x.toLowerCase());
@@ -296,6 +303,8 @@ function saved(dirs: string[], cwd: string) {
 function allow(dirs: string[]) {
 	const add = dirs.filter((d) => !config!.filesystem.allowWrite.includes(d));
 	config!.filesystem.allowWrite.push(...add);
+	// Linux's runtime mounts only write roots that exist, so a missing one is made first (each is a checked dir under home).
+	if (seam.platform() === "linux") for (const d of add) try { mkdirSync(d, { recursive: true }); } catch {}
 	const c = runtime!.SandboxManager.getConfig()!;
 	runtime!.SandboxManager.updateConfig({ ...c, filesystem: { ...c.filesystem, allowWrite: [...c.filesystem.allowWrite, ...add] } });
 }
