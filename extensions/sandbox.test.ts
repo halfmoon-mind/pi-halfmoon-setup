@@ -17,6 +17,7 @@ const HOME = homedir();
 const load = seam.load;
 const temps = seam.temps;
 const cwd0 = seam.cwd;
+const platform0 = seam.platform;
 const judge0 = seam.judge;
 const macOS = { skip: process.platform !== "darwin" && "the real sandbox runs on macOS here" };
 const unique = (name: string) => `${name}-${randomBytes(6).toString("hex")}`;
@@ -73,6 +74,7 @@ function restore() {
 	seam.load = load;
 	seam.temps = temps;
 	seam.cwd = cwd0;
+	seam.platform = platform0;
 	seam.judge = judge0;
 }
 
@@ -615,7 +617,7 @@ test("escalation: high with a UI asks; yes re-runs, no or a rejected dialog does
 		const yes = await s.run(F);
 		assert.equal(yes.exitCode, 3);
 		assert.match(yes.out, /approved by the user → re-ran outside the sandbox\]\noutside\n/);
-		assert.match(u.confirms[0]!, /blocked: x: Operation not permitted\nrisk high: writes a dotfile\nRun it again with no sandbox\?$/);
+		assert.match(u.confirms[0]!, /blocked: x: Operation not permitted\n\(sandboxed bash writes only in \/.*sandbox-project-[^,]*, .*allowed hosts\)\nrisk high: writes a dotfile\nRun it again with no sandbox\?$/);
 		for (const answer of [async () => false, () => Promise.reject(new Error("closed"))]) {
 			u.answer = answer;
 			const no = await s.run(F);
@@ -670,6 +672,7 @@ test("escalation: sudo, git push and rm -r skip the classifier and always go to 
 		}
 	}
 	assert.equal(u.confirms.length, 2);
+	assert.match(u.confirms[1]!, /risk high: bash deletes recursively \(rm -r\), a fixed rule that always asks \(no classifier\)\n/);
 });
 
 test("escalation: PI_SANDBOX_ESCALATE=off leaves a denied command denied", async () => {
@@ -870,6 +873,36 @@ test("macOS: a Node child denied a localhost bind is detected; low re-runs it, h
 		assert.match(low.out, /re-ran outside the sandbox/);
 	} finally {
 		await s.shutdown();
+		restore();
+	}
+});
+
+test("Linux: an absent .git/commondir is not denied (the runtime's /dev/null stand-in would break git) but removed after a sandboxed run creates it", async () => {
+	const project = tmp("sandbox-project-");
+	await new Promise((done) => execFile("git", ["init", "-q"], { cwd: project }, done));
+	const cd = join(real(project), ".git", "commondir");
+	seam.load = async () => (await fake()).runtime;
+	delete process.env.PI_SANDBOX_ROOT;
+	try {
+		assert.ok(policy(project).filesystem.denyWrite.includes(cd), "macOS: denied even while absent");
+		seam.platform = () => "linux";
+		const deny = policy(project).filesystem.denyWrite;
+		assert.ok(!deny.includes(cd), "Linux: not denied while absent");
+		for (const n of ["config.worktree", "modules", "worktrees"]) assert.ok(deny.includes(join(real(project), ".git", n)), n);
+		const s = await start(project);
+		try {
+			const { out } = await bash("echo /tmp/evil > .git/commondir", project);
+			assert.match(out, /removed \.git\/commondir/);
+			assert.equal(existsSync(cd), false);
+			const status = await new Promise<string>((done) => execFile("git", ["status", "--porcelain"], { cwd: project }, (e) => done(e ? e.message : "ok")));
+			assert.equal(status, "ok", "git still works");
+			assert.doesNotMatch((await bash("true", project)).out, /removed/, "nothing to remove, nothing said");
+		} finally {
+			await s.shutdown();
+		}
+		writeFileSync(cd, "../x"); // one that already exists is denied as it is (no stand-in), on Linux too
+		assert.ok(policy(project).filesystem.denyWrite.includes(cd));
+	} finally {
 		restore();
 	}
 });
