@@ -5,11 +5,12 @@
 // rm -r and .env writes ask first; with no UI they are blocked. Fails closed: until the sandbox is up,
 // or when it cannot start, bash and those tools are blocked. PI_SANDBOX=off turns all of it off.
 // A blocked bash command is rated by openai/gpt-6.1-terra: low re-runs unsandboxed, high asks (no UI: denied) and the host rating; PI_SANDBOX_ESCALATE=off.
+// A write blocked outside the writable dirs first offers that tool's dirs (session or always; re-run sandboxed), even when the command exits 0.
 // Not covered: this file itself failing to load, trusted extensions, user-typed !commands.
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import type { AssistantMessage, Tool } from "@earendil-works/pi-ai";
@@ -71,6 +72,7 @@ export const seam = {
 	platform: () => process.platform,
 	judge: (input: object, signal?: AbortSignal): Promise<unknown> => classify(PROMPT, input, session, signal),
 	judgeHost: (input: object, signal?: AbortSignal): Promise<unknown> => classify(HOST_PROMPT, input, session, signal),
+	home: () => homedir(),
 };
 
 let off = false;
@@ -228,6 +230,76 @@ export function risky(tool: string, input: Record<string, unknown>, cwd: string)
 	if ((tool === "write" || tool === "edit") && basename(toCwd(String(input.path ?? ""), cwd)).startsWith(".env")) return `${tool} changes ${input.path}`;
 }
 
+// Dirs one toolchain writes together, relative to home, offered at once.
+// ponytail: Flutter only; add a row when another toolchain needs several dirs.
+const BUNDLES = [["fvm", ".pub-cache", ".dart-tool", ".dartServer", ".flutter", ".flutter-devtools", ".config/flutter", "Library/Caches/flutter_engine"]];
+const UNSAFE = /[\x00-\x1f\x7f*?[]/; // control chars, and globs merge() refuses in sandbox.json
+// Blocked paths in denial lines: quoted (Node, Dart, Python, GNU), and the shell's `/p: Operation not permitted`.
+const QUOTED = /'(\/[^'\n]+)'/g;
+const BARE = /(?:^|\s)(\/[^:'"\n]*?): (?:Operation not permitted|Read-only file system)/g;
+
+/** The first blocked path in `lines` with dirs to offer: its Flutter/Dart bundle, or the one tool dir covering it.
+ * The lines are untrusted (a command can print a fake denial), so broad, config-holding and credential dirs are refused. */
+export function offer(lines: string[], p: Policy): { path: string; dirs: string[] } | undefined {
+	const home = real(seam.home());
+	const agent = real(getAgentDir());
+	const { allowWrite, denyWrite, denyRead } = p.filesystem;
+	const under = (d: string) => within(home, d) && fold(d) !== fold(home);
+	const allowed = (d: string) => allowWrite.some((a) => within(a, d));
+	const ok = (d: string) => {
+		if (!under(d) || UNSAFE.test(d) || MANDATORY.test(d)) return false;
+		const st = lstatSync(d, { throwIfNoEntry: false });
+		return (!st || st.isDirectory()) && ![...denyRead, agent].some((x) => within(d, x) || within(x, d));
+	};
+	for (const l of lines) {
+		for (const path of [...l.matchAll(QUOTED), ...l.matchAll(BARE)].map((m) => m[1]!)) {
+			try {
+				const r = real(path);
+				if (UNSAFE.test(path) || UNSAFE.test(r) || allowed(r) || denyWrite.some((d) => within(d, r)) || MANDATORY.test(r) || !under(r)) continue;
+				let dirs: string[];
+				const bundle = BUNDLES.find((b) => b.some((d) => within(join(home, d), r)));
+				if (bundle) {
+					// A symlinked member is dropped: merge() would resolve it on restart, maybe somewhere else.
+					dirs = bundle.map((d) => [join(home, d), real(join(home, d))]).filter(([s, d]) => fold(s) === fold(d!)).map(([, d]) => d!);
+				} else {
+					const parts = relative(home, r).split(sep);
+					const [a = "", b = ""] = parts.map((x) => x.toLowerCase());
+					const n = a === "library" && (b === "caches" || b === "application support") ? 3 : 1;
+					if ((n === 1 && ["library", ".config", ".local", ".claude", ".pi", ".ssh", ".git"].includes(a)) || parts.length <= n) continue;
+					dirs = [real(join(home, ...parts.slice(0, n)))]; // checked below: `~/.zshrc/fake` names a file
+				}
+				dirs = dirs.filter((d) => ok(d) && !allowed(d));
+				if (dirs.length) return { path, dirs };
+			} catch {} // a symlink loop: no offer for that path
+		}
+	}
+}
+
+const tilde = (dir: string) => "~/" + relative(real(seam.home()), dir);
+
+/** sandbox.json with `dirs` added to filesystem.allowWrite; throws unless both it and the current file pass session_start's checks. */
+function saved(dirs: string[], cwd: string) {
+	const file = join(getAgentDir(), "sandbox.json");
+	const j = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+	const check = (o: unknown) => {
+		const parsed = runtime!.SandboxRuntimeConfigSchema.safeParse(merge(policy(undefined), structuredClone(o), cwd));
+		if (!parsed.success) throw new Error(`invalid sandbox policy: ${parsed.error.message}`);
+	};
+	check(j); // a malformed file is never rewritten
+	const list: string[] = j.filesystem?.allowWrite ?? [];
+	j.filesystem = { ...j.filesystem, allowWrite: [...list, ...dirs.map(tilde).filter((d) => !list.includes(d))] };
+	check(j);
+	return j;
+}
+
+/** Widens the live policy: later wraps (updateConfig) and pi's write/edit tools (config). */
+function allow(dirs: string[]) {
+	const add = dirs.filter((d) => !config!.filesystem.allowWrite.includes(d));
+	config!.filesystem.allowWrite.push(...add);
+	const c = runtime!.SandboxManager.getConfig()!;
+	runtime!.SandboxManager.updateConfig({ ...c, filesystem: { ...c.filesystem, allowWrite: [...c.filesystem.allowWrite, ...add] } });
+}
+
 /** Why bash and the checked tools cannot run now, if they cannot. */
 async function notReady(): Promise<string | undefined> {
 	if (!ready) return `sandbox: not started (no session_start, or the session ended). ${FIX}`;
@@ -309,7 +381,7 @@ export function scanner() {
 	const dec = new StringDecoder("utf8");
 	const hit = (l: string) => {
 		const i = l.search(DENIED);
-		if (i >= 0 && s.lines.length < 20) s.lines.push(l.slice(Math.max(0, i - 100), i + 200));
+		if (i >= 0 && s.lines.length < 20) s.lines.push(l.slice(Math.max(0, i - 400), i + 200));
 		return i >= 0;
 	};
 	const s = {
@@ -369,10 +441,12 @@ function escalationMessage(command: string, denials: string[], reason: string) {
 
 /** After a sandboxed run failed with denial evidence: re-run with no sandbox if rated low or the user approves. */
 async function escalate(command: string, cwd: string, options: Options, first: { exitCode: number | null }, id: string, since: number, lines: string[]) {
-	if (first.exitCode === 0 || process.env.PI_SANDBOX_ESCALATE === "off") return first;
+	if (process.env.PI_SANDBOX_ESCALATE === "off") return first;
 	const events = runtime?.SandboxManager.getSandboxViolationStore().getViolationsForCommand(id) ?? [];
 	const denials = [...events.map((e) => String(e.line).slice(0, 300)), ...lines].slice(0, 20);
 	if (!denials.length) return first;
+	const o = offer(denials, config!);
+	if (first.exitCode === 0 && !(ui && o)) return first; // a success only ever offers dirs
 	const say = (s: string) => options.onData(Buffer.from(`\n[sandbox: blocked; ${s}]\n`));
 	// A low verdict must not override a host denial: the user's own no, or a high rating with no UI to ask.
 	const hostDenied = () => {
@@ -381,6 +455,29 @@ async function escalate(command: string, cwd: string, options: Options, first: {
 		return true;
 	};
 	if (hostDenied()) return first;
+	const file = join(getAgentDir(), "sandbox.json");
+	const dirs = o?.dirs.map(tilde).join(", ");
+	if (ui && o) {
+		const [once, always] = ["Allow for this session", `Always allow (save to ${file})`];
+		const title = [`Sandbox: allow writes to ${dirs}?`, `$ ${command.slice(0, 200)}`, `blocked: ${o.path}`, "Code bash writes there can run later outside the sandbox (when you run that tool yourself)."];
+		const choice = await ui.select(title.join("\n"), [once, always, "No"]).catch(() => undefined);
+		if (options.signal?.aborted) return first;
+		if (choice === once || choice === always) {
+			allow(o.dirs);
+			let where = "for this session";
+			if (choice === always) {
+				try {
+					writeFileSync(file, JSON.stringify(saved(o.dirs, cwd), null, 2) + "\n");
+					where = "and saved them to sandbox.json";
+				} catch (e) {
+					ui.notify(`sandbox: ${file} not changed (${(e as Error).message}); allowed for this session only`, "error");
+				}
+			}
+			say(`allowed writes to ${dirs} ${where} → re-ran in the sandbox`);
+			return run(command, cwd, options); // a fresh sandboxed run; it escalates again if needed
+		}
+	}
+	if (first.exitCode === 0) return first; // declined: a success never goes on to the classifier
 	const r = risky("bash", { command }, cwd);
 	let v: Verdict = { risk: "high", reason: r ?? "" };
 	if (!r) v = await rate(() => seam.judge({ command, cwd, root: process.env.PI_SANDBOX_ROOT, blocked: denials, intent: intent() }, options.signal));
@@ -390,7 +487,15 @@ async function escalate(command: string, cwd: string, options: Options, first: {
 		ui?.notify(`sandbox: re-ran outside the sandbox (risk low: ${v.reason}): ${command.slice(0, 200)}`, "warning");
 		say(`risk low (${v.reason}) → re-ran outside the sandbox`);
 	} else if (!ui) {
-		say(`risk high (${v.reason}): needs the user's approval to run outside the sandbox; ask the user`);
+		let fix = "";
+		if (o) {
+			try {
+				fix = `; or ask the user to save this as ${file} and restart pi: ${JSON.stringify(saved(o.dirs, cwd))}`;
+			} catch {
+				fix = `; or ask the user to add ${dirs} to filesystem.allowWrite in ${file}`;
+			}
+		}
+		say(`risk high (${v.reason}): needs the user's approval to run outside the sandbox; ask the user${fix}`);
 		return first;
 	} else if (!(await ui.confirm("Sandbox: run outside the sandbox?", escalationMessage(command, denials, r ? `${r}, a fixed rule that always asks (no classifier)` : v.reason)).catch(() => false))) {
 		say(`risk high (${v.reason}); the user declined running it outside the sandbox`);

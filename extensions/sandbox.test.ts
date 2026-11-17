@@ -5,12 +5,12 @@ import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createWriteToolDefinition, discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
 import compactTools from "./compact-tools.ts";
-import sandbox, { blocked, merge, policy, real, risky, sandboxedBash, scanner, seam, verdict } from "./sandbox.ts";
+import sandbox, { blocked, merge, offer, policy, real, risky, sandboxedBash, scanner, seam, verdict } from "./sandbox.ts";
 
 const PKG = real(dirname(dirname(fileURLToPath(import.meta.url))));
 const HOME = homedir();
@@ -20,6 +20,7 @@ const cwd0 = seam.cwd;
 const platform0 = seam.platform;
 const judge0 = seam.judge;
 const judgeHost0 = seam.judgeHost;
+const home0 = seam.home;
 const macOS = { skip: process.platform !== "darwin" && "the real sandbox runs on macOS here" };
 const unique = (name: string) => `${name}-${randomBytes(6).toString("hex")}`;
 // Every fixture dir, removed once all tests (and their runtime shutdowns) are done.
@@ -28,20 +29,25 @@ const tmp = (prefix: string) => (made.push(mkdtempSync(join(tmpdir(), prefix))),
 after(() => made.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 // A fake runtime for policy tests: the real config schema, a SandboxManager that starts nothing. A wrapped command
-// runs with IN_SANDBOX set; `ask` is the host callback it was initialized with, `ids` each wrap's commandId.
+// runs with IN_SANDBOX set and ALLOW (allowWrite, `:`-joined); `ask` is the host callback it was initialized with,
+// `ids` each wrap's commandId, `updates` each updateConfig.
 async function fake(init: (c: any, ask: any) => Promise<void> = async () => {}, violations: (id: string) => { line: string }[] = () => []) {
 	const actual = await load();
 	const wrapped: string[] = [];
 	const ids: (string | undefined)[] = [];
 	const got: { ask?: (r: { host: string; port?: number }) => Promise<boolean> } = {};
+	const updates: any[] = [];
+	let cfg: any;
 	const SandboxManager = {
 		reset: async () => {},
-		initialize: async (c: any, ask: any) => ((got.ask = ask), init(c, ask)),
+		initialize: async (c: any, ask: any) => ((cfg = c), (got.ask = ask), init(c, ask)),
+		getConfig: () => cfg,
+		updateConfig: (c: any) => (updates.push(c), (cfg = c)),
 		cleanupAfterCommand: () => {},
 		getSandboxViolationStore: () => ({ getViolationsForCommand: (id: string) => violations(id) }),
-		wrapWithSandbox: async (c: string, _b?: string, _c?: unknown, _s?: AbortSignal, o?: { commandId?: string }) => (wrapped.push(c), ids.push(o?.commandId), `IN_SANDBOX=1; export IN_SANDBOX; ${c}`),
+		wrapWithSandbox: async (c: string, _b?: string, _c?: unknown, _s?: AbortSignal, o?: { commandId?: string }) => (wrapped.push(c), ids.push(o?.commandId), `IN_SANDBOX=1; ALLOW='${cfg.filesystem.allowWrite.join(":")}'; export IN_SANDBOX ALLOW; ${c}`),
 	};
-	return { runtime: { ...actual, SandboxManager } as any, wrapped, ids, got };
+	return { runtime: { ...actual, SandboxManager } as any, wrapped, ids, got, updates };
 }
 
 /** The sandbox (and compact-tools, for its bash) loaded into a fake pi, with a session started in `cwd`. */
@@ -78,6 +84,7 @@ function restore() {
 	seam.platform = platform0;
 	seam.judge = judge0;
 	seam.judgeHost = judgeHost0;
+	seam.home = home0;
 }
 
 // Denied in the (fake) sandbox, exit 3 outside it.
@@ -99,10 +106,11 @@ async function escalating({ judge = async () => LOW, host = async () => HIGH, ui
 	return { ...s, ...f, calls, hostCalls, run: (command: string) => bash(command, project) };
 }
 
-/** A UI whose confirm gives what `answer` returns now, recording every notify. */
+/** A UI whose confirm gives what `answer` returns now and select what `pick` does, recording every notify and select title. */
 function fakeUI() {
-	const u = { answer: async (): Promise<boolean> => false, confirms: [] as string[], notes: [] as [string, string][] };
-	return Object.assign(u, { ui: { confirm: async (_t: string, m: string) => (u.confirms.push(m), u.answer()), notify: (m: string, t: string) => u.notes.push([m, t]) } });
+	const u = { answer: async (): Promise<boolean> => false, pick: (_o: string[]): string | undefined => undefined, confirms: [] as string[], selects: [] as string[], notes: [] as [string, string][] };
+	const ui = { confirm: async (_t: string, m: string) => (u.confirms.push(m), u.answer()), notify: (m: string, t: string) => u.notes.push([m, t]), select: async (t: string, o: string[]) => (u.selects.push(t), u.pick(o)) };
+	return Object.assign(u, { ui });
 }
 
 test("before startup, bash refuses to run", async () => {
@@ -979,7 +987,7 @@ test("scanner: denial text split across chunks or left unterminated is found; ou
 	c.feed(Buffer.from("Read-only file system"));
 	c.end();
 	assert.equal(c.lines.length, 1);
-	assert.ok(c.lines[0]!.length <= 300 && c.lines[0]!.includes("Read-only file system"));
+	assert.ok(c.lines[0]!.length <= 600 && c.lines[0]!.includes("Read-only file system"));
 	const d = scanner();
 	for (let i = 0; i < 30; i++) d.feed(Buffer.from(`${i}: EROFS\n`));
 	assert.equal(d.lines.length, 20);
@@ -1089,5 +1097,248 @@ test("Linux: a repo gets a real .git/commondir naming itself before any command,
 		assert.equal(existsSync(join(plain, ".git")), false);
 	} finally {
 		restore();
+	}
+});
+
+// Denied in the (fake) sandbox under D until D is writable (in $ALLOW); exit 3 outside it.
+const G = (D: string) => `case ":$ALLOW:" in *":${D}:"*) echo ok; exit 0;; esac; echo "bash: line 1: ${D}/cache/x: Operation not permitted" >&2; if [ -n "$IN_SANDBOX" ]; then exit 1; fi; echo outside; exit 3`;
+const FLUTTER = ["fvm", ".pub-cache", ".dart-tool", ".dartServer", ".flutter", ".flutter-devtools", ".config/flutter", "Library/Caches/flutter_engine"];
+
+test("offer: a blocked path outside the writable dirs proposes its Flutter/Dart bundle or its one tool dir, never a broad, config or credential dir", () => {
+	const home = tmp("sandbox-home-");
+	const H = real(home);
+	const project = join(H, "proj");
+	mkdirSync(project);
+	const agent = tmp("sandbox-agent-");
+	process.env.PI_CODING_AGENT_DIR = agent;
+	seam.home = () => home;
+	const P = (fs: Record<string, string[]> = {}): any => ({ network: {}, filesystem: { allowWrite: [project], denyWrite: [join(H, ".npm/_logs")], denyRead: [join(H, ".ssh")], allowRead: [], ...fs } });
+	const dirs = (line: string, p = P()) => offer([line], p)?.dirs;
+	const bare = (path: string) => `bash: ${path}: Operation not permitted`;
+	const at = (...ds: string[]) => ds.map((d) => join(H, d));
+	try {
+		const fvm = `bash: ${H}/fvm/versions/3.35.7/bin/internal/update_engine_version.sh: line 74: ${H}/fvm/versions/3.35.7/bin/cache/engine.stamp: Operation not permitted`;
+		assert.deepEqual(offer([fvm], P()), { path: `${H}/fvm/versions/3.35.7/bin/cache/engine.stamp`, dirs: at(...FLUTTER) });
+		const dart = `FileSystemException: Cannot open file, path = '${H}/.dart-tool/dart-flutter-telemetry-session.json' (OS Error: Operation not permitted, errno = 1)`;
+		assert.deepEqual(dirs(dart), at(...FLUTTER));
+		assert.deepEqual(dirs(dart, P({ allowWrite: [project, join(H, "fvm")] })), at(...FLUTTER.slice(1)));
+		assert.deepEqual(dirs(`Error: EPERM: operation not permitted, open '${H}/.gradle/caches/x'`), at(".gradle"));
+		assert.deepEqual(dirs(`touch: cannot touch '${H}/.cargo/x': Read-only file system`), at(".cargo"));
+		assert.deepEqual(dirs(bare(`${H}/Library/Caches/foo/bar`)), at("Library/Caches/foo"));
+		assert.deepEqual(dirs(bare(`${H}/Library/Application Support/Foo/x`)), at("Library/Application Support/Foo"));
+		assert.deepEqual(dirs(bare(`${H}/.npm/_cacache/x`)), at(".npm"), "a denyWrite inside the dir stays denied");
+		const sc = scanner();
+		sc.feed(Buffer.from(`${"x".repeat(350)} ${bare(`${H}/.gradle/y`)}\n`));
+		assert.deepEqual(offer(sc.lines, P())?.dirs, at(".gradle"), "a long prefix before the path survives the scanner");
+		const none = [
+			bare(H),
+			...[".zshrc", ".ssh/x", ".pi/agent/x", ".config/git/config", ".local/bin/x", ".claude/x", "Library/LaunchAgents/x.plist", ".npm/_logs/x", "a[1]/x", ".gradle\x1b/x"].map((p) => bare(`${H}/${p}`)),
+			bare("/etc/hosts"),
+			bare(join(project, "x")),
+			"x: Operation not permitted",
+		];
+		for (const l of none) assert.equal(offer([l], P()), undefined, l);
+
+		// Forged children of files and of .git propose nothing.
+		writeFileSync(join(H, "notes"), "x");
+		for (const p of [".zshrc/fake", ".bashrc/fake", ".gitconfig/fake", ".git/objects/fake", "notes/fake"]) assert.equal(offer([bare(`${H}/${p}`)], P()), undefined, p);
+		// Symlinked bundle members are dropped, wherever they point.
+		const outside = tmp("sandbox-outside-");
+		mkdirSync(join(H, ".pub-cache"));
+		mkdirSync(join(H, ".ssh"));
+		symlinkSync(outside, join(H, "fvm"));
+		symlinkSync(join(H, ".ssh"), join(H, ".flutter"));
+		symlinkSync(agent, join(H, ".dartServer"));
+		const linked = dirs(`Error: EPERM: operation not permitted, open '${H}/.pub-cache/x'`)!;
+		assert.ok(linked.includes(join(H, ".pub-cache")));
+		for (const d of [join(H, "fvm"), real(outside), join(H, ".flutter"), join(H, ".ssh"), join(H, ".dartServer"), real(agent)]) assert.ok(!linked.includes(d), d);
+		// A canonical target with a glob char is refused.
+		mkdirSync(join(H, "we[ird"));
+		symlinkSync(join(H, "we[ird"), join(H, ".gradle"));
+		assert.equal(offer([bare(`${H}/.gradle/x`)], P()), undefined);
+		// Read-denied regions: no dir under one, no bundle member under one.
+		assert.equal(offer([bare(`${H}/Library/Caches/foo/x`)], P({ denyRead: [join(H, "Library")] })), undefined);
+		assert.ok(!dirs(dart, P({ denyRead: [join(H, "Library/Caches")] }))!.includes(join(H, "Library/Caches/flutter_engine")));
+	} finally {
+		restore();
+	}
+});
+
+test("allow dirs: with a UI, a write blocked outside the writable dirs offers its dir; session allows it live and re-runs sandboxed", async () => {
+	const u = fakeUI();
+	u.pick = (o) => o[0];
+	const s = await escalating({ ui: u.ui });
+	const D = join(HOME, unique(".pi-sandbox-test"));
+	try {
+		const { exitCode, out } = await s.run(G(D));
+		assert.equal(exitCode, 0);
+		assert.ok(out.endsWith(`[sandbox: blocked; allowed writes to ~/${basename(D)} for this session → re-ran in the sandbox]\nok\n`), out);
+		assert.equal(s.calls.length, 0);
+		assert.equal(s.updates.length, 1);
+		assert.ok(s.updates[0].filesystem.allowWrite.includes(D));
+		assert.ok(u.selects[0]!.includes(G(D).slice(0, 200)));
+		assert.ok(u.selects[0]!.includes(`${D}/cache/x`));
+		assert.match(u.selects[0]!, /outside the sandbox/);
+		assert.equal(existsSync(join(s.agentDir, "sandbox.json")), false);
+		assert.equal(await s.gate("write", { path: join(D, "f") }), undefined, "pi's write tool follows");
+		assert.deepEqual(await s.run(G(D)), { exitCode: 0, out: "ok\n" });
+		assert.equal(u.selects.length, 1);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("allow dirs: always appends to sandbox.json; a malformed file stays as it is and the dir is allowed for the session only", async () => {
+	const u = fakeUI();
+	u.pick = (o) => o[1];
+	const s = await escalating({ ui: u.ui });
+	const file = join(s.agentDir, "sandbox.json");
+	try {
+		writeFileSync(file, '{"network":{"allowedDomains":["example.org"]}}');
+		const D = join(HOME, unique(".pi-sandbox-test"));
+		const r = await s.run(G(D));
+		assert.equal(r.exitCode, 0);
+		assert.match(r.out, /and saved them to sandbox\.json → re-ran in the sandbox\]\nok\n$/);
+		assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { network: { allowedDomains: ["example.org"] }, filesystem: { allowWrite: [`~/${basename(D)}`] } });
+		writeFileSync(file, '{"filesystem": []}');
+		const again = await s.run(G(join(HOME, unique(".pi-sandbox-test"))));
+		assert.equal(readFileSync(file, "utf8"), '{"filesystem": []}');
+		assert.equal(u.notes.at(-1)![1], "error");
+		assert.match(u.notes.at(-1)![0], /for this session only/);
+		assert.match(again.out, /ok\n$/);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("allow dirs: No or a dismissed dialog goes on to escalation unchanged", async () => {
+	const u = fakeUI();
+	const s = await escalating({ ui: u.ui });
+	try {
+		for (const pick of [() => "No", () => undefined]) {
+			u.pick = pick;
+			const { exitCode, out } = await s.run(G(join(HOME, unique(".pi-sandbox-test"))));
+			assert.equal(exitCode, 3);
+			assert.match(out, /re-ran outside the sandbox/);
+		}
+		assert.equal(u.selects.length, 2);
+		assert.equal(s.updates.length, 0);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("allow dirs: each re-run may hit another dir, which is offered next", async () => {
+	const u = fakeUI();
+	u.pick = (o) => o[0];
+	const s = await escalating({ ui: u.ui });
+	const n = join(tmp("sandbox-count-"), "n");
+	const base = join(HOME, unique(".pi-sandbox-test"));
+	try {
+		const cmd = `n=$(cat ${n} 2>/dev/null || echo 0); echo $((n + 1)) > ${n}; if [ "$n" = 3 ]; then echo ok; exit 0; fi; echo "bash: line 1: ${base}-$n/a: Operation not permitted" >&2; exit 1`;
+		const { exitCode, out } = await s.run(cmd);
+		assert.equal(exitCode, 0, out);
+		assert.equal(u.selects.length, 3);
+		assert.equal(s.calls.length, 0);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("allow dirs: with no UI, a high-rated command's message carries the sandbox.json to paste", async () => {
+	const s = await escalating({ judge: async () => HIGH });
+	try {
+		const { exitCode, out } = await s.run(G(join(HOME, unique(".pi-sandbox-test"))));
+		assert.equal(exitCode, 1);
+		assert.match(out, /save this as .*sandbox\.json and restart pi: \{"filesystem":\{"allowWrite":\["~\/\.pi-sandbox-test-/);
+		assert.equal(s.updates.length, 0);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("allow dirs: PI_SANDBOX_ESCALATE=off offers nothing", async () => {
+	const u = fakeUI();
+	u.pick = (o) => o[0];
+	const s = await escalating({ ui: u.ui });
+	process.env.PI_SANDBOX_ESCALATE = "off";
+	try {
+		assert.equal((await s.run(G(join(HOME, unique(".pi-sandbox-test"))))).exitCode, 1);
+		assert.equal(u.selects.length, 0);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("allow dirs: a success (`… | cat` hides the failure) still offers the dir; session re-runs sandboxed", async () => {
+	const u = fakeUI();
+	u.pick = (o) => o[0];
+	const s = await escalating({ ui: u.ui });
+	try {
+		const { exitCode, out } = await s.run(`(${G(join(HOME, unique(".pi-sandbox-test")))}) 2>&1 | cat`);
+		assert.equal(exitCode, 0);
+		assert.ok(out.endsWith("→ re-ran in the sandbox]\nok\n"), out);
+		assert.equal(s.updates.length, 1);
+		assert.equal(s.calls.length, 0);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("allow dirs: a success with No or a dismissed dialog returns the first run, with no classifier", async () => {
+	const u = fakeUI();
+	const s = await escalating({ ui: u.ui });
+	try {
+		for (const pick of [() => "No", () => undefined]) {
+			u.pick = pick;
+			const { exitCode, out } = await s.run(`(${G(join(HOME, unique(".pi-sandbox-test")))}) 2>&1 | cat`);
+			assert.equal(exitCode, 0);
+			assert.doesNotMatch(out, /re-ran/);
+		}
+		assert.equal(u.selects.length, 2);
+		assert.equal(s.updates.length, 0);
+		assert.equal(s.calls.length, 0);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("allow dirs: a success with no UI stays as it is: no marker, no classifier", async () => {
+	const s = await escalating({ judge: async () => LOW });
+	try {
+		const { exitCode, out } = await s.run(`(${G(join(HOME, unique(".pi-sandbox-test")))}) 2>&1 | cat`);
+		assert.equal(exitCode, 0);
+		assert.doesNotMatch(out, /\[sandbox:/);
+		assert.equal(s.calls.length, 0);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("macOS: allowing a dir widens the real sandbox's next wrap", macOS, async () => {
+	const outside = join(HOME, unique(".pi-sandbox-probe"));
+	mkdirSync(outside);
+	const u = fakeUI();
+	u.pick = (o) => o[0];
+	delete process.env.PI_SANDBOX_ROOT;
+	const s = await start(tmp("sandbox-project-"), { ui: u.ui });
+	try {
+		seam.judge = async () => HIGH;
+		const r = await bash(`echo x > ${outside}/f`, s.ctx.cwd);
+		assert.equal(r.exitCode, 0, r.out);
+		assert.equal(readFileSync(join(outside, "f"), "utf8"), "x\n");
+	} finally {
+		await s.shutdown();
+		restore();
+		rmSync(outside, { recursive: true, force: true }); // only ours: the name is unique
 	}
 });
