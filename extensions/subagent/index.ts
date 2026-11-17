@@ -787,7 +787,13 @@ export default function (pi: ExtensionAPI) {
 				const head = `${statusIcon(r)} ${theme.fg("accent", r.agent)}`;
 				if (r.exitCode === -1) {
 					const last = getDisplayItems(r.messages).findLast((i) => i.type === "toolCall");
-					const now = last?.type === "toolCall" ? formatToolCall(last.name, last.args, theme.fg.bind(theme)) : theme.fg("muted", "starting");
+					const description = last?.type === "toolCall" && last.name === "bash" ? last.args.description : undefined;
+					const now =
+						typeof description === "string" && description.trim()
+							? theme.fg("toolOutput", description)
+							: last?.type === "toolCall"
+								? formatToolCall(last.name, last.args, theme.fg.bind(theme))
+								: theme.fg("muted", "starting");
 					box.addChild(row(`${head}  ${theme.fg("muted", "now: ")}${now}`));
 				} else if (isFailedResult(r)) {
 					box.addChild(row(`${head}${r.stopReason ? ` ${theme.fg("error", `[${r.stopReason}]`)}` : ""}`));

@@ -18,6 +18,8 @@ test("pi's looking-around tools and bash are all replaced", () => {
 	pdfRead({ registerTool: (t: any) => (tools[t.name] = t) } as any);
 	assert.deepEqual(Object.keys(tools).sort(), ["bash", "find", "grep", "ls", "read"]);
 	assert.ok(tools.read.execute && tools.read.renderShell === "self");
+	assert.ok(tools.bash.parameters.properties.description);
+	assert.deepEqual(tools.bash.parameters.required, ["command"]);
 });
 
 test("calls made together share one line on the first row; the rest draw nothing unless expanded or failed", () => {
@@ -84,6 +86,22 @@ test("a collapsed bash call drops a leading cd into the session's directory, and
 	assert.ok(call(true).includes(`cd ${cwd}; ls`));
 	assert.ok(!call(false).includes("cd "));
 	assert.match(call(false), /\$ ls/);
+});
+
+test("a collapsed bash call with a description shows it in place of the command; expanded shows the command", () => {
+	initTheme();
+	const tools: Record<string, any> = {};
+	compactTools({ registerTool: (t: any) => (tools[t.name] = t), on: () => {} } as any);
+	const args = { command: "cd /abs/sub && cat x | head", description: "Show the top of x" };
+	const call = (expanded: boolean, state: any = {}, executionStarted = false) =>
+		stripVTControlCharacters(tools.bash.renderCall(args, theme, { expanded, cwd: "/abs", state, executionStarted }).render(200).join("\n"));
+	const collapsed = call(false);
+	assert.match(collapsed, /bash Show the top of x/);
+	assert.ok(!collapsed.includes("$ ") && !collapsed.includes("cat x"));
+	assert.ok(call(true).includes(args.command));
+	const state: any = {};
+	call(false, state, true);
+	assert.equal(typeof state.startedAt, "number", "the row's timer still starts");
 });
 
 test("a read wrapped by another module copy (pi loads pdf-read.ts with its own) still joins the groups", async () => {

@@ -1,7 +1,7 @@
 // Looking around (read, grep, find, ls) shows just its call line, and calls made together share one
-// line ("read 3 · grep 1  router.ts, footer.ts, …"). bash shows only its command's first line,
-// without a leading `cd` into the session's directory. ctrl+o shows everything, and errors always
-// show. edit and write keep pi's display: their diffs are the work.
+// line ("read 3 · grep 1  router.ts, footer.ts, …"). bash shows the model-written description, or
+// else its command's first line without a leading `cd` into the session's directory. ctrl+o shows
+// everything, and errors always show. edit and write keep pi's display: their diffs are the work.
 // read is overridden in pdf-read.ts, so it wraps itself there with compact().
 import { homedir } from "node:os";
 import { basename } from "node:path";
@@ -14,6 +14,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Container, Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { sandboxedBash } from "./sandbox.ts";
 
 type RenderResult = NonNullable<ToolDefinition["renderResult"]>;
@@ -123,8 +124,13 @@ export function shortCommand(command: string, cwd?: string): string {
 }
 
 function shortCallWhenCollapsed(render: RenderCall): RenderCall {
-	return (args, theme, context) =>
-		render(context.expanded || typeof args?.command !== "string" ? args : { ...args, command: shortCommand(args.command, context.cwd) }, theme, context);
+	return (args, theme, context) => {
+		if (!context.expanded && typeof args?.description === "string" && args.description.trim()) {
+			render(args, theme, context); // starts the row's Elapsed/Took timer
+			return new Text(`${theme.fg("toolTitle", theme.bold("bash"))} ${theme.fg("toolOutput", shortCommand(args.description))}`, 0, 0);
+		}
+		return render(context.expanded || typeof args?.command !== "string" ? args : { ...args, command: shortCommand(args.command, context.cwd) }, theme, context);
+	};
 }
 
 export default function (pi: ExtensionAPI) {
@@ -133,7 +139,13 @@ export default function (pi: ExtensionAPI) {
 	}
 	// bash runs in sandbox.ts's OS sandbox; the call keeps the command as the model wrote it.
 	const bash = createBashToolDefinition(process.cwd(), { operations: sandboxedBash });
-	pi.registerTool({ ...bash, renderCall: shortCallWhenCollapsed(bash.renderCall!), renderResult: hideWhenCollapsed(bash.renderResult!) });
+	const parameters = Type.Object({
+		...bash.parameters.properties,
+		description: Type.Optional(
+			Type.String({ description: "What this command does, in 5-10 words, in the language the user writes in. Shown to the user in place of the command." }),
+		),
+	});
+	pi.registerTool({ ...bash, parameters, renderCall: shortCallWhenCollapsed(bash.renderCall!), renderResult: hideWhenCollapsed(bash.renderResult!) });
 
 	pi.on("message_update", (e) => groupCalls(e.message.role === "assistant" ? e.message.content : undefined));
 	pi.on("message_end", (e) => groupCalls(e.message.role === "assistant" ? e.message.content : undefined));
