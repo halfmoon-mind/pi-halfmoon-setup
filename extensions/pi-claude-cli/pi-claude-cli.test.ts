@@ -156,7 +156,7 @@ test("claude waits in its MCP call for the result pi sends next, then goes on in
 		event({ type: "message_stop" }),
 		{ type: "result", subtype: "success" },
 	];
-	const fake = { steps: [{ read: true }, { lines: toolUse }, { call: "t1" }, { lines: say("a.txt says A") }, { read: true }, { lines: say("bye") }, { exit: 0 }] };
+	const fake = { steps: [{ read: true }, { lines: toolUse }, { call: "t1" }, { lines: say("a.txt says A") }, { read: true }, { read: true }, { lines: say("bye") }, { exit: 0 }] };
 	const ask = { role: "user", content: "read /a.txt", timestamp: 1 };
 
 	const call = await run(fake, [ask]);
@@ -164,13 +164,13 @@ test("claude waits in its MCP call for the result pi sends next, then goes on in
 	const result = { role: "toolResult", toolCallId: "t1", toolName: "read", content: [{ type: "text", text: "A" }], isError: false, timestamp: 2 };
 	const answer = await run(fake, [ask, call, result]);
 	assert.deepEqual(answer.content, [{ type: "text", text: "a.txt says A" }]);
-	const bye = await run(fake, [ask, call, result, answer, { role: "user", content: "thanks", timestamp: 3 }]);
+	const bye = await run(fake, [ask, call, result, answer, { role: "user", content: "thanks", timestamp: 3 }, { role: "user", content: "note", timestamp: 4 }]);
 	assert.deepEqual(bye.content, [{ type: "text", text: "bye" }]);
 
-	// The one process got the prompt, then pi's tool result as the MCP call's result, then only the new message.
+	// The one process got the prompt, then pi's tool result as the MCP call's result, then only the new messages (a note after the user's message does not restart it).
 	const { inputs, toolResults } = recorded();
 	assert.deepEqual(toolResults, [{ content: [{ type: "text", text: "A" }], isError: false }]);
-	assert.deepEqual(inputs.map((input: any) => input.message.content), ["USER:\nread /a.txt", [{ type: "text", text: "thanks" }]]);
+	assert.deepEqual(inputs.map((input: any) => input.message.content), ["USER:\nread /a.txt", [{ type: "text", text: "thanks" }], [{ type: "text", text: "note" }]]);
 });
 
 test("a claude crash ends the turn with claude's stderr", async () => {

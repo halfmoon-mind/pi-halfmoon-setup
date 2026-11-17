@@ -136,7 +136,8 @@ export function streamViaCli(
 /**
  * pi's messages since the CLI's latest reply, if pi's context goes on from it
  * and the waiting CLI can take them: a result for each of the reply's tool
- * calls, or one user message after a reply that made none.
+ * calls, or user messages (a note such as handoff's plan-first can follow the
+ * real one) after a reply that made none.
  */
 function newMessages(
   s: Session,
@@ -161,7 +162,7 @@ function newMessages(
       news.every(
         (m) => m.role === "toolResult" && calls.includes(m.toolCallId),
       )
-    : news.length === 1 && news[0].role === "user";
+    : news.length > 0 && news.every((m) => m.role === "user");
   return fits ? news : undefined;
 }
 
