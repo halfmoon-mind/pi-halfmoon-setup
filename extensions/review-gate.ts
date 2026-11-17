@@ -106,12 +106,12 @@ const valid = (v: any): v is Verdict =>
 	(v.decision === "ALLOW" || v.decision === "BLOCK") && typeof v.reason === "string" && v.reason.length <= 200;
 
 // A review with no verdict line: gpt-6.1-terra reads one from it (as sandbox.ts's classifier does). Exactly one valid call, else undefined.
-async function extract(ctx: ExtensionContext, output: string): Promise<Verdict | undefined> {
+async function extract(ctx: ExtensionContext, output: string, signal: AbortSignal): Promise<Verdict | undefined> {
 	try {
 		const model = ctx.modelRegistry.find("openai", "gpt-6.1-terra");
 		if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) return undefined;
 		const messages = [{ role: "user" as const, content: clip(output, 4000), timestamp: Date.now() }];
-		const options = { reasoningEffort: "low", cacheRetention: "none", sessionId: randomUUID(), maxRetries: 1, signal: AbortSignal.timeout(30_000) };
+		const options = { reasoningEffort: "low", cacheRetention: "none", sessionId: randomUUID(), maxRetries: 1, signal: AbortSignal.any([AbortSignal.timeout(30_000), signal]) };
 		const message = await ctx.modelRegistry.complete(model, { systemPrompt: EXTRACT, messages, tools: [VERDICT] }, options as any);
 		const calls = Array.isArray(message?.content) ? message.content.filter((c) => c.type === "toolCall") : [];
 		const c = calls[0];
@@ -181,7 +181,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_before_settle", async (event, ctx) => {
-		if (!gated(ctx.mode) || event.outcome !== "completed" || !base || off()) return;
+		if (!gated(ctx.mode) || event.outcome !== "completed" || !base || off() || ctx.hasPendingMessages()) return; // pi continues for the queued message, and the next settle reviews
 		const now = snapshot(ctx.cwd);
 		const p = plan(ctx);
 		if (!now) return;
@@ -190,6 +190,9 @@ export default function (pi: ExtensionAPI) {
 			if (checksFailing) ctx.ui.notify("review gate: plan checks still fail and nothing changed since; unreviewed", "warning");
 			return;
 		}
+		// A check round or review cut short by a queued message puts this back, so the next settle still runs them.
+		const prev = { seen, seenTicks, checksFailing };
+		const rollBack = () => ({ seen, seenTicks, checksFailing } = prev);
 		seen = now;
 		seenTicks = ticks;
 		// A plan with steps left, or one this prompt ticked: a finished plan must not judge a later, unrelated request.
@@ -204,12 +207,19 @@ export default function (pi: ExtensionAPI) {
 		if (commands.length && checkRounds >= MAX_CHECK_ROUNDS) {
 			ctx.ui.notify(`review gate: the plan's checks already ran ${MAX_CHECK_ROUNDS} rounds this prompt, so they were not run again before the review`, "warning");
 		} else if (commands.length) {
-			checkRounds++;
 			ctx.ui.setWidget("review", [ctx.ui.theme.fg("accent", "Running the plan's checks…")]);
 			const results = [];
 			// ponytail: checks that already passed re-run each round; skip them if rounds get slow.
-			for (const c of commands) results.push(await runCheck(c, ctx.cwd));
+			for (const c of commands) {
+				if (ctx.hasPendingMessages()) break;
+				results.push(await runCheck(c, ctx.cwd));
+			}
 			ctx.ui.setWidget("review", undefined);
+			if (results.length < commands.length) {
+				rollBack();
+				return;
+			}
+			checkRounds++;
 			pi.appendEntry("plan-checks", { results });
 			const failed = results.filter((r) => !r.ok);
 			checksFailing = failed.length > 0;
@@ -252,19 +262,35 @@ export default function (pi: ExtensionAPI) {
 		let output = "";
 		let failure = "";
 		let result: Awaited<ReturnType<typeof runSingleAgent>> | undefined;
+		let v: Verdict | undefined;
+		// A queued message stops the review and its verdict extraction; a stale ctx throws, which stops it too.
+		const pending = new AbortController();
+		const poll = setInterval(() => {
+			try {
+				if (ctx.hasPendingMessages()) pending.abort();
+			} catch {
+				pending.abort();
+			}
+		}, 500);
 		try {
 			const agents = discoverAgents(ctx.cwd, "user").agents;
-			result = await runSingleAgent(ctx.cwd, {}, agents, "reviewer", task, undefined, undefined, AbortSignal.timeout(REVIEW_TIMEOUT_MS), undefined, (results) => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results }));
+			result = await runSingleAgent(ctx.cwd, {}, agents, "reviewer", task, undefined, undefined, AbortSignal.any([AbortSignal.timeout(REVIEW_TIMEOUT_MS), pending.signal]), undefined, (results) => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results }));
 			if (isFailedResult(result)) failure = `exit ${result.exitCode}, ${result.stopReason ?? "no stop reason"}: ${getResultOutput(result).trim()}`;
 			else output = getResultOutput(result).trim();
+			if (!pending.signal.aborted) v = parseVerdict(output) ?? (output ? await extract(ctx, output, pending.signal) : undefined);
 		} catch (err) {
 			failure = err instanceof Error ? err.message : String(err); // the timeout lands here
 		} finally {
+			clearInterval(poll);
 			ctx.ui.setStatus("review", undefined);
 			ctx.ui.setWidget("review", undefined);
 		}
+		if (pending.signal.aborted) {
+			rollBack();
+			reviews--;
+			return;
+		}
 
-		const v = parseVerdict(output) ?? (output ? await extract(ctx, output) : undefined);
 		// The reviewer runs in its own pi with no session file, so its tokens and cost are kept here.
 		pi.appendEntry("review-gate", { model: result?.model, usage: result?.usage, verdict: v ? `${v.decision}: ${v.reason}`.slice(0, 200) : "NONE" });
 		if (v?.decision === "BLOCK") {

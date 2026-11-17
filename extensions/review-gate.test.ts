@@ -1,12 +1,18 @@
 // Run: node --import ./extensions/test-hooks.ts --test extensions/review-gate.test.ts
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { seam } from "./checks.ts";
 import reviewGate, { parseVerdict, runLog, snapshot } from "./review-gate.ts";
+
+// Waits, up to 30 s, until `ok()` holds.
+const until = async (ok: () => boolean) => {
+	for (let i = 0; i < 600 && !ok(); i++) await new Promise((r) => setTimeout(r, 50));
+	assert.ok(ok());
+};
 
 test("a prompt that changed the repo is reviewed before pi settles; a BLOCK sends the model back, once per change", async () => {
 	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "review-gate-agent-"));
@@ -39,7 +45,8 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	const widgets: Record<string, string[] | undefined> = {};
 	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), setWidget: (key: string, lines?: string[]) => (widgets[key] = lines), notify: (msg: string) => notices.push(msg) };
 	const branch: any[] = [];
-	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => branch } };
+	let queued = false;
+	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => branch }, hasPendingMessages: () => queued };
 	const assistant = { role: "assistant", content: [{ type: "text", text: "Bumped a.txt to 2." }] };
 	const later = Date.now() + 3_600_000; // after every before_agent_start below
 	const long = `HEAD ${"x".repeat(3000)} what should the counter be?`;
@@ -173,6 +180,110 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	assert.equal(logged.at(-1).verdict, "NONE");
 	handlers.before_agent_start({}, ctx);
 	assert.equal(statuses.review, undefined);
+
+	// A message queued while the verdict is extracted stops the extraction, and the next settle reviews the same changes,
+	// with the review budget intact (three stops, then a fourth review).
+	let extracting = false;
+	(ctx as any).modelRegistry.complete = (_model: any, _context: any, options: any) => {
+		extracting = true;
+		return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+	};
+	writeFileSync(verdict, "The counter looks wrong.");
+	writeFileSync(join(repo, "a.txt"), "12\n");
+	const before = { logged: logged.length, notices: notices.length };
+	for (let i = 0; i < 3; i++) {
+		extracting = false;
+		const p = settle();
+		await until(() => extracting);
+		const t = Date.now();
+		queued = true;
+		assert.equal(await p, undefined);
+		assert.ok(Date.now() - t < 5000, "the settle returns promptly");
+		queued = false;
+	}
+	assert.deepEqual({ logged: logged.length, notices: notices.length }, before, "no review entry, no notice");
+	assert.equal(statuses.review, undefined);
+	writeFileSync(verdict, "ALLOW: ok");
+	assert.equal(await settle(), undefined);
+	assert.equal(notices.at(-1), "review: ok");
+});
+
+test("a queued message skips or aborts the review, and the next settle reviews those changes", async () => {
+	const savedArgv1 = process.argv[1];
+	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "review-gate-agent-"));
+	const repo = mkdtempSync(join(tmpdir(), "review-gate-repo-"));
+	const run = (...args: string[]) => execFileSync("git", args, { cwd: repo });
+	run("init", "-q");
+	writeFileSync(join(repo, "a.txt"), "1\n");
+	run("add", ".");
+	run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+
+	// The reviewer's pi logs each task, waits while `slow` exists, then answers ALLOW.
+	const dir = mkdtempSync(join(tmpdir(), "fake-pi-"));
+	const log = join(dir, "tasks.log");
+	const slow = join(dir, "slow");
+	process.argv[1] = join(dir, "pi.mjs");
+	writeFileSync(
+		process.argv[1],
+		`import { appendFileSync, existsSync } from "node:fs";
+		appendFileSync(${JSON.stringify(log)}, "task\\n---\\n");
+		const end = Date.now() + 120_000;
+		while (existsSync(${JSON.stringify(slow)}) && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+		console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ALLOW: fine" }], stopReason: "stop" } }));`,
+	);
+	const reviewCount = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n---\n").length - 1 : 0);
+
+	const handlers: Record<string, any> = {};
+	const logged: any[] = [];
+	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: () => {} } as any);
+	const notices: string[] = [];
+	const statuses: Record<string, string | undefined> = {};
+	const widgets: Record<string, string[] | undefined> = {};
+	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), setWidget: (key: string, lines?: string[]) => (widgets[key] = lines), notify: (msg: string) => notices.push(msg) };
+	let pending = false;
+	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => [] }, hasPendingMessages: () => pending };
+	const settle = () => handlers.agent_before_settle({ entries: [], outcome: "completed", context: { llmMessages: [] } }, ctx);
+
+	try {
+		handlers.before_agent_start({}, ctx);
+		writeFileSync(join(repo, "a.txt"), "2\n");
+		pending = true;
+		assert.equal(await settle(), undefined, "a queued message skips the review");
+		assert.equal(reviewCount(), 0);
+		assert.deepEqual(notices, []);
+		pending = false;
+		assert.equal(await settle(), undefined, "no further change, still reviewed");
+		assert.equal(reviewCount(), 1);
+		assert.deepEqual(notices, ["review: fine"]);
+
+		// A message queued while the reviewer runs stops it.
+		writeFileSync(join(repo, "a.txt"), "3\n");
+		writeFileSync(slow, "");
+		const p = settle();
+		await until(() => reviewCount() === 2);
+		pending = true;
+		assert.equal(await p, undefined);
+		assert.equal(reviewCount(), 2);
+		assert.deepEqual(notices, ["review: fine"]);
+		assert.equal(logged.length, 1);
+		assert.equal(statuses.review, undefined);
+		assert.equal(widgets.review, undefined);
+
+		pending = false;
+		rmSync(slow);
+		assert.equal(await settle(), undefined);
+		assert.equal(reviewCount(), 3);
+		assert.equal(notices.at(-1), "review: fine");
+
+		// The stopped review was not counted: this is the prompt's third.
+		writeFileSync(join(repo, "a.txt"), "4\n");
+		assert.equal(await settle(), undefined);
+		assert.equal(reviewCount(), 4);
+		assert.equal(notices.at(-1), "review: fine");
+	} finally {
+		rmSync(slow, { force: true });
+		process.argv[1] = savedArgv1!;
+	}
 });
 
 test("parseVerdict reads the first non-empty line, tolerant of markdown and case", () => {
@@ -202,14 +313,17 @@ test("before the review, the harness runs the checks of steps the prompt ticked,
 		writeFileSync(join(repo, "docs/plans/p.md"), `- [${one}] 1. one - files: a.txt - check: \`check-1\`\n  prose\n- [${two}] 2. two - files: a.txt - check: \`check-2\`\n\n## Success criteria\n- \`crit\`\n- \`check-2\`\n`);
 	planFile(" ", " ");
 
-	// The reviewer's pi answers ALLOW and logs each task.
+	// The reviewer's pi logs each task, waits while `slow` exists, and answers ALLOW.
 	const dir = mkdtempSync(join(tmpdir(), "fake-pi-"));
 	const log = join(dir, "tasks.log");
+	const slow = join(dir, "slow");
 	process.argv[1] = join(dir, "pi.mjs");
 	writeFileSync(
 		process.argv[1],
-		`import { appendFileSync } from "node:fs";
+		`import { appendFileSync, existsSync } from "node:fs";
 		appendFileSync(${JSON.stringify(log)}, "task\\n---\\n");
+		const end = Date.now() + 120_000;
+		while (existsSync(${JSON.stringify(slow)}) && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
 		console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ALLOW: fine" }], stopReason: "stop" } }));`,
 	);
 	const reviewCount = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n---\n").length - 1 : 0);
@@ -230,7 +344,8 @@ test("before the review, the harness runs the checks of steps the prompt ticked,
 	const widgets: string[] = [];
 	const ui = { theme: { fg: (_c: string, t: string) => t }, setStatus: () => {}, setWidget: (_k: string, lines?: string[]) => lines && widgets.push(...lines), notify: (msg: string) => notices.push(msg) };
 	let activeFile = "docs/plans/p.md";
-	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => [{ type: "custom", customType: "handoff-plan", data: { path: activeFile } }] } };
+	let pending = false;
+	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => [{ type: "custom", customType: "handoff-plan", data: { path: activeFile } }] }, hasPendingMessages: () => pending };
 	const settle = (mode = "tui") => handlers.agent_before_settle({ entries: [], outcome: "completed", context: { llmMessages: [] } }, { ...ctx, mode });
 	let n = 1;
 	const change = () => writeFileSync(join(repo, "a.txt"), `${++n}\n`);
@@ -316,7 +431,56 @@ test("before the review, the harness runs the checks of steps the prompt ticked,
 		calls.length = 0;
 		assert.equal(await settle(), undefined);
 		assert.deepEqual(calls, ["r-1", "r-3"], "a tick moved from step 2 to step 3, same count, no code change");
+
+		// A message queued during the checks stops them before the next command; the round is not counted or logged,
+		// and the next settle runs them all.
+		const rPlan = (two: string, three: string) =>
+			writeFileSync(join(repo, "docs/plans/r.md"), `- [x] 1. one - files: a.txt - check: \`r-1\`\n- [${two}] 2. two - files: a.txt - check: \`r-2\`\n- [${three}] 3. three - files: a.txt - check: \`r-3\`\n\n## Success criteria\n- \`r-crit\`\n`);
+		handlers.before_agent_start({}, ctx); // r.md: steps 1 and 3 ticked
+		rPlan("x", "x");
+		calls.length = 0;
+		const planChecks = () => logged.filter((e) => e.customType === "plan-checks").length;
+		const entries = planChecks();
+		const reviewed = reviewCount();
+		const mock = seam.exec;
+		seam.exec = async (...args) => {
+			pending = true;
+			return mock(...args);
+		};
+		assert.equal(await settle(), undefined);
+		assert.deepEqual(calls, ["r-2"]);
+		assert.equal(planChecks(), entries, "no plan-checks entry");
+		assert.equal(reviewCount(), reviewed, "no review");
+		seam.exec = mock;
+		pending = false;
+		calls.length = 0;
+		assert.equal(await settle(), undefined, "no further change, the checks still run");
+		assert.deepEqual(calls, ["r-2", "r-crit"]);
+		assert.equal(reviewCount(), reviewed + 1);
+
+		// A failing round at F, then passing checks at P whose review a queued message stops: back at F, the failure still holds.
+		rPlan("x", " ");
+		handlers.before_agent_start({}, ctx); // r.md: steps 1 and 2 ticked
+		outcomes["r-3"] = { out: "r-3 failed", code: 1 };
+		rPlan("x", "x");
+		change();
+		const atF = n;
+		assert.equal((await settle()).continue, true);
+		outcomes["r-3"] = { out: "ok", code: 0 };
+		change();
+		writeFileSync(slow, "");
+		const p = settle();
+		await until(() => reviewCount() === reviewed + 2);
+		pending = true;
+		assert.equal(await p, undefined);
+		pending = false;
+		rmSync(slow);
+		writeFileSync(join(repo, "a.txt"), `${atF}\n`);
+		assert.equal(await settle(), undefined);
+		assert.match(notices.at(-1)!, /plan checks still fail and nothing changed since; unreviewed/);
+		assert.equal(reviewCount(), reviewed + 2);
 	} finally {
+		rmSync(slow, { force: true });
 		seam.exec = saved.exec;
 		process.argv[1] = saved.argv1!;
 		restore("PI_CODING_AGENT_DIR", saved.agentDir);

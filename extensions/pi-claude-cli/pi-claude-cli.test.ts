@@ -6,6 +6,7 @@ import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import extension, { formatRateLimits } from "./index.ts";
+import { buildPrompt } from "./src/prompt-builder.ts";
 
 // A stand-in `claude` on PATH that records how it was called and what reached it. $FAKE_CLAUDE lists its
 // steps: read the next stdin message, call a tool through the MCP server like the CLI does, write stream-json
@@ -207,4 +208,26 @@ test("the subscription usage claude reports goes to the footer, with the reset t
 	await run({ lines }, [{ role: "user", content: "hi", timestamp: 1 }]);
 	assert.equal(statuses.claude, "claude 5h 3% · 7d 64%");
 	assert.match(formatRateLimits(limits(0.85, 0.64).rate_limit_info)!, /^<claude 5h 85% ↻\d\d:\d\d · 7d 64%>$/);
+});
+
+test("a prompt with an image keeps the messages in order, the final user message labelled", () => {
+	const image = { type: "image", data: "AAAA", mimeType: "image/png" };
+	const shape = (messages: any[]) => (buildPrompt({ messages }) as any[]).map((b) => (b.type === "image" ? "image" : b.text));
+	assert.deepEqual(
+		shape([
+			{ role: "user", content: [{ type: "text", text: "PROMPT" }, image] },
+			{ role: "assistant", content: [{ type: "text", text: "WORKING" }] },
+			{ role: "toolResult", toolName: "bash", content: [{ type: "text", text: "RESULT" }] },
+		]),
+		["USER:", "PROMPT", "image", "ASSISTANT:\nWORKING\nTOOL RESULT (historical Bash):\nRESULT"],
+	);
+	assert.deepEqual(
+		shape([
+			{ role: "user", content: "LOOK" },
+			{ role: "assistant", content: [{ type: "text", text: "CALL" }] },
+			{ role: "toolResult", toolName: "bash", content: [{ type: "text", text: "SHOT" }, image] },
+			{ role: "user", content: "NEXT" },
+		]),
+		["USER:\nLOOK\nASSISTANT:\nCALL\nTOOL RESULT (historical Bash):\nSHOT\n[An image was shared here but could not be included]", "image", "USER:", "NEXT"],
+	);
 });

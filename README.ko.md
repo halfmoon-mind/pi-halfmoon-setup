@@ -73,7 +73,7 @@ pi --model router/auto
 
 실행 중에는 `/model`로 `router/auto`를 선택할 수도 있습니다. Laya를 사용하는 경우 `/laya`로 상태를 확인합니다.
 
-시작할 때 이 패키지에 필요한데 이 머신에 없는 것(`claude` CLI나 그 로그인, `openai` 인증, poppler, pandoc, LibreOffice)을 경고하고, 첫 프롬프트 전까지 입력창 위에 워크플로 명령어를 한 줄로 보여 줍니다. pi가 로드한 스킬·확장 목록을 숨기려면 머신마다 `~/.pi/agent/settings.json`에 `"quietStartup": "header"`를 설정하세요. thinking 블록을 `Ctrl+T`를 누를 때만 펼치려면 같은 파일에 `"hideThinkingBlock": true`도 넣으세요. 작업 방향은 tool 호출만 봐도 알 수 있습니다. 이 키를 설정하기 전까지는 시작할 때 경고가 뜹니다. thinking을 계속 보면서 경고만 끄려면 `false`로 설정하세요. 접힌 thinking 블록은 pi의 `Thinking...` 줄조차 그리지 않습니다. 접힌 bash 호출은 모델이 작성한 설명이 있으면 그 설명을, 없으면 명령의 첫 줄을 보여 주되, 세션 디렉터리로 들어가는 맨 앞의 `cd`는 뺍니다. `Ctrl+O`를 누르면 명령이 작성된 그대로 보입니다.
+시작할 때 이 패키지에 필요한데 이 머신에 없는 것(`claude` CLI나 그 로그인, `openai` 인증, poppler, pandoc, LibreOffice)을 경고하고, 첫 프롬프트 전까지 입력창 위에 워크플로 명령어를 한 줄로 보여 줍니다. pi가 로드한 스킬·확장 목록을 숨기려면 머신마다 `~/.pi/agent/settings.json`에 `"quietStartup": "header"`를 설정하세요. thinking 블록을 `Ctrl+T`를 누를 때만 펼치려면 같은 파일에 `"hideThinkingBlock": true`도 넣으세요. 작업 방향은 tool 호출만 봐도 알 수 있습니다. 이 키를 설정하기 전까지는 시작할 때 경고가 뜹니다. thinking을 계속 보면서 경고만 끄려면 `false`로 설정하세요. 접힌 thinking 블록은 pi의 `Thinking...` 줄조차 그리지 않습니다. 접힌 bash 호출은 모델이 작성한 설명이 있으면 그 설명을, 없으면 명령의 첫 줄을 보여 주되, 세션 디렉터리로 들어가는 맨 앞의 `cd`는 뺍니다. `Ctrl+O`를 누르면 명령이 작성된 그대로 보입니다. 같은 파일에 `"steeringMode": "all"`과 `"followUpMode": "all"`도 넣으면, pi가 큐에 쌓인 같은 종류의 메시지를 턴마다 하나씩이 아니라 그 큐를 다음에 읽을 때 한꺼번에 전달합니다. steer는 다음 턴에 들어가고, follow-up은 여전히 에이전트가 멈추려 할 때까지 기다립니다. 실행 중인 pi는 다시 시작할 때까지 이전 값을 씁니다.
 
 ## 사용 예시
 

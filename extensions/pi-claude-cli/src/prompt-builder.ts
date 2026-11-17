@@ -127,36 +127,45 @@ export function buildPrompt(context: {
   );
 
   if (finalUserHasImages || anyToolResultHasImages) {
-    // Build history as text (all messages except the final user message)
-    const historyParts: string[] = [];
-    const toolResultImageBlocks: AnthropicContentBlock[] = [];
+    // One pass in message order: history as text, with the final user message's blocks and
+    // tool-result images in place
+    const result: AnthropicContentBlock[] = [];
+    let parts: string[] = [];
+    const flush = () => {
+      if (parts.length) result.push({ type: "text", text: parts.join("\n") });
+      parts = [];
+    };
     for (let i = 0; i < context.messages.length; i++) {
-      if (i === finalUserIndex) continue; // Skip final user message -- handled separately
       const message = context.messages[i];
-      if (message.role === "user") {
-        historyParts.push("USER:");
-        historyParts.push(userContentToText(message.content));
+      if (i === finalUserIndex) {
+        parts.push("USER:");
+        flush();
+        result.push(...buildFinalUserContent(message.content));
+      } else if (message.role === "user") {
+        parts.push("USER:");
+        parts.push(userContentToText(message.content));
       } else if (message.role === "assistant") {
-        historyParts.push("ASSISTANT:");
-        historyParts.push(contentToText(message.content));
+        parts.push("ASSISTANT:");
+        parts.push(contentToText(message.content));
       } else if (message.role === "toolResult") {
         if (message.toolName && isCustomToolName(message.toolName)) {
-          historyParts.push(`TOOL RESULT (${message.toolName}):`);
+          parts.push(`TOOL RESULT (${message.toolName}):`);
         } else {
           const claudeToolName = message.toolName
             ? mapPiToolNameToClaude(message.toolName)
             : "unknown";
-          historyParts.push(`TOOL RESULT (historical ${claudeToolName}):`);
+          parts.push(`TOOL RESULT (historical ${claudeToolName}):`);
         }
         // Extract text portion of tool result
-        historyParts.push(toolResultContentToText(message.content));
-        // Collect image blocks from tool results for passthrough
+        parts.push(toolResultContentToText(message.content));
+        // Pass tool-result images through right after their text
         if (Array.isArray(message.content)) {
           for (const block of message.content) {
             if (block.type === "image") {
               const translated = translateImageBlock(block);
               if (translated) {
-                toolResultImageBlocks.push(translated);
+                flush();
+                result.push(translated);
                 // Undo the placeholder count from toolResultContentToText since we're passing through
                 placeholderImageCount--;
               }
@@ -165,22 +174,7 @@ export function buildPrompt(context: {
         }
       }
     }
-
-    // Build final user message content blocks
-    const finalUserContent =
-      finalUserIndex >= 0
-        ? buildFinalUserContent(context.messages[finalUserIndex].content)
-        : [];
-
-    // Combine: history text + tool result images + final user content blocks
-    const result: AnthropicContentBlock[] = [];
-    const historyText = historyParts.join("\n");
-    if (historyText) {
-      result.push({ type: "text", text: historyText });
-    }
-    // Insert tool result images after history text (Claude sees them in context)
-    result.push(...toolResultImageBlocks);
-    result.push(...finalUserContent);
+    flush();
 
     if (placeholderImageCount > 0) {
       console.warn(
