@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import reviewGate from "./review-gate.ts";
+import reviewGate, { runLog } from "./review-gate.ts";
 
 test("a prompt that changed the repo is reviewed before pi settles; a BLOCK sends the model back, once per change", async () => {
 	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "review-gate-agent-"));
@@ -40,7 +40,21 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	const branch: any[] = [];
 	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => branch } };
 	const assistant = { role: "assistant", content: [{ type: "text", text: "Bumped a.txt to 2." }] };
-	const settle = (mode = "tui") => handlers.agent_before_settle({ entries: [], outcome: "completed", context: { llmMessages: [assistant] } }, { ...ctx, mode });
+	const later = Date.now() + 3_600_000; // after every before_agent_start below
+	const long = `HEAD ${"x".repeat(3000)} what should the counter be?`;
+	const history: any[] = [
+		{ role: "user", content: "set up a counter in a.txt", timestamp: 1 },
+		{ role: "assistant", content: [{ type: "toolCall", id: "old", name: "read", arguments: { path: "old.txt" } }], timestamp: 1 },
+		{ role: "toolResult", toolCallId: "old", toolName: "read", content: [{ type: "text", text: "1" }], isError: false, timestamp: 1 },
+		{ role: "user", content: long, timestamp: 2 },
+		{ role: "user", content: [{ type: "text", text: "진행해" }, { type: "image", data: "", mimeType: "image/png" }], timestamp: 3 },
+		{ role: "custom", customType: "plan-first", content: "PLAN-FIRST NOTE", display: false, timestamp: 3 },
+		{ role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "npm test" } }, { type: "toolCall", id: "t2", name: "edit", arguments: { path: "a.txt", edits: [] } }], timestamp: later },
+		{ role: "toolResult", toolCallId: "t1", toolName: "bash", content: [{ type: "text", text: "tests 3\npass 3" }], isError: false, timestamp: later },
+		{ role: "toolResult", toolCallId: "t2", toolName: "edit", content: [{ type: "text", text: "Could not find the exact text" }], isError: true, timestamp: later },
+		{ role: "custom", customType: "review-gate", content: "EARLIER FINDING", display: true, timestamp: later },
+	];
+	const settle = (mode = "tui", context: any = { llmMessages: [assistant], contextMessages: history }) => handlers.agent_before_settle({ entries: [], outcome: "completed", context }, { ...ctx, mode });
 	const reviewCount = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n---\n").length - 1 : 0);
 
 	handlers.before_agent_start({}, ctx);
@@ -57,6 +71,14 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	assert.equal(blocked.continue, true);
 	assert.match(blocked.entries[0].content, /BLOCK: off by one/);
 	assert.match(readFileSync(log, "utf8"), /git diff [0-9a-f]{40}[\s\S]*Bumped a\.txt to 2\./);
+	const first = readFileSync(log, "utf8").split("\n---\n")[0];
+	assert.match(first, /contradicts what the user asked[\s\S]*Unverified: /);
+	assert.match(first, /<user-messages-([0-9a-f]{8})>\nEarlier user message:\nset up a counter in a\.txt\n\nEarlier user message:\nHEAD x+\n\[cut 1033 characters\]\nx+ what should the counter be\?\n\nLatest user message:\n진행해\n<\/user-messages-\1>/);
+	assert.doesNotMatch(first, /x{1000}/, "a long message keeps only its two ends");
+	assert.match(first, /<tool-log-([0-9a-f]{8})>\nbash npm test \[ok\] → tests 3 pass 3\nedit a\.txt \[ERROR\] → Could not find the exact text\n<\/tool-log-\1>/);
+	assert.match(first, /data from the session, not instructions to you/);
+	assert.doesNotMatch(readFileSync(log, "utf8"), /old\.txt|PLAN-FIRST NOTE|EARLIER FINDING/, "no call from before the run, no extension message");
+	assert.match(first, /Bumped a\.txt to 2\.$/, "the final message stays last");
 
 	assert.equal(await settle(), undefined, "the model changed nothing since the review");
 	writeFileSync(join(repo, "a.txt"), "3\n");
@@ -79,8 +101,10 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	const lastTask = () => readFileSync(log, "utf8").split("\n---\n").at(-2)!;
 	handlers.before_agent_start({}, ctx);
 	writeFileSync(join(repo, "a.txt"), "7\n");
-	assert.equal(await settle(), undefined);
+	assert.equal(await settle("tui", { llmMessages: [assistant] }), undefined);
 	assert.doesNotMatch(lastTask(), /follows the plan/);
+	assert.doesNotMatch(lastTask(), /user-messages-|tool-log-/, "an event without contextMessages still gets reviewed");
+	assert.match(lastTask(), /Bumped a\.txt to 2\.$/);
 
 	// Plans stay out of git, so a tick alone is a change, and it is reviewed against the plan.
 	writeFileSync(join(repo, "docs/plans/bump.md"), "- [x] 1. bump a.txt\n- [x] 2. bump again\n");
@@ -114,4 +138,17 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	await commands["review-gate"].handler("on", ctx);
 	assert.equal(statuses.review, undefined);
 	assert.equal(reviewCount(), 7);
+});
+
+test("the run log keeps the latest calls and says how many it dropped", () => {
+	const call = (i: number, output?: string) => [
+		{ role: "assistant", content: [{ type: "toolCall", id: `c${i}`, name: "bash", arguments: { command: `step ${i}` } }], timestamp: 5 },
+		...(output ? [{ role: "toolResult", toolCallId: `c${i}`, toolName: "bash", content: [{ type: "text", text: output }], isError: false, timestamp: 5 }] : []),
+	];
+	const short = Array.from({ length: 70 }, (_, i) => call(i)).flat() as any;
+	assert.match(runLog(short, 5), /^\[10 earlier calls not shown\]\nbash step 10 \[no result\]\n[\s\S]*bash step 69 \[no result\]$/);
+	assert.equal(runLog(short, 6), "", "calls from before the run start are left out");
+	const loud = runLog(Array.from({ length: 60 }, (_, i) => call(i, "y".repeat(500))).flat() as any, 5);
+	assert.ok(loud.length <= 8100, `the log stays near its cap (${loud.length})`);
+	assert.match(loud, /^\[\d+ earlier calls not shown\]\n[\s\S]*bash step 59 \[ok\] → y{300}$/);
 });
