@@ -70,6 +70,7 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	assert.equal(widgets.review, undefined, "and is gone once it answers");
 	assert.equal(blocked.continue, true);
 	assert.match(blocked.entries[0].content, /BLOCK: off by one/);
+	assert.match(blocked.entries[0].content, /full report on their request/);
 	assert.match(readFileSync(log, "utf8"), /git diff [0-9a-f]{40}[\s\S]*Bumped a\.txt to 2\./);
 	const first = readFileSync(log, "utf8").split("\n---\n")[0];
 	assert.match(first, /contradicts what the user asked[\s\S]*Unverified: /);

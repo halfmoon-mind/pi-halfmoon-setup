@@ -164,7 +164,7 @@ export default function (pi: ExtensionAPI) {
 
 		const verdict = output.split("\n", 1)[0];
 		if (verdict.startsWith("BLOCK:")) {
-			const content = `The reviewer found an issue to fix before finishing. Fix it, or explain why it is not one.\n\n${output}`;
+			const content = `The reviewer found an issue to fix before finishing. Fix it, or explain why it is not one. The user reads only your final reply, so write it as the full report on their request: what they asked, what was done, and how it was checked, with the review fix as a short note at the end.\n\n${output}`;
 			return { entries: [...event.entries, { type: "custom_message", customType: "review-gate", content, display: true }], continue: true };
 		}
 		// A failed review never blocks: looping the model on a reviewer outage helps no one.
