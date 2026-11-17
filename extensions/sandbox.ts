@@ -307,6 +307,25 @@ const run: BashOperations["exec"] = async (command, cwd, options) => {
 	return escalate(command, cwd, options, first, id, since, found.lines);
 };
 
+/** The high-risk dialog body: each part on its own lines, colored by role (the dialog paints everything else accent). */
+function escalationMessage(command: string, denials: string[], reason: string) {
+	const c = (k: string, t: string) => (ui?.theme ? ui.theme.fg(k as any, t) : t);
+	const list = (xs: string[], k: string) => xs.map((x) => `  ${c(k, x)}`).join("\n");
+	return [
+		"",
+		c("toolOutput", `$ ${command}`),
+		"",
+		c("error", "blocked"),
+		list(denials.slice(0, 5), "text"),
+		"",
+		`${c("warning", "risk high")}  ${c("text", reason)}`,
+		"",
+		c("muted", "sandboxed bash writes only in"),
+		list(config!.filesystem.allowWrite, "muted"),
+		c("dim", "  (not the project's .git/config, .git/hooks, .git/worktrees and the like; network: allowed hosts only)"),
+	].join("\n");
+}
+
 /** After a sandboxed run failed with denial evidence: re-run with no sandbox if rated low or the user approves. */
 async function escalate(command: string, cwd: string, options: Options, first: { exitCode: number | null }, id: string, since: number, lines: string[]) {
 	if (first.exitCode === 0 || process.env.PI_SANDBOX_ESCALATE === "off") return first;
@@ -335,7 +354,7 @@ async function escalate(command: string, cwd: string, options: Options, first: {
 	} else if (!ui) {
 		say(`risk high (${v.reason}): needs the user's approval to run outside the sandbox; ask the user`);
 		return first;
-	} else if (!(await ui.confirm("Sandbox: run outside the sandbox?", `${command}\nblocked: ${denials.slice(0, 5).join("\n")}\n(sandboxed bash writes only in ${config!.filesystem.allowWrite.join(", ")}, not the project's .git/config, .git/hooks, .git/worktrees and the like, and reaches only allowed hosts)\nrisk high: ${r ? `${r}, a fixed rule that always asks (no classifier)` : v.reason}\nRun it again with no sandbox?`).catch(() => false))) {
+	} else if (!(await ui.confirm("Sandbox: run outside the sandbox?", escalationMessage(command, denials, r ? `${r}, a fixed rule that always asks (no classifier)` : v.reason)).catch(() => false))) {
 		say(`risk high (${v.reason}); the user declined running it outside the sandbox`);
 		return first;
 	} else say(`risk high (${v.reason}), approved by the user → re-ran outside the sandbox`);

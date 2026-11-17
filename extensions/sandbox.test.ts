@@ -618,7 +618,7 @@ test("escalation: high with a UI asks; yes re-runs, no or a rejected dialog does
 		const yes = await s.run(F);
 		assert.equal(yes.exitCode, 3);
 		assert.match(yes.out, /approved by the user → re-ran outside the sandbox\]\noutside\n/);
-		assert.match(u.confirms[0]!, /blocked: x: Operation not permitted\n\(sandboxed bash writes only in \/.*sandbox-project-[^,]*, .*, not the project's \.git\/config, .*allowed hosts\)\nrisk high: writes a dotfile\nRun it again with no sandbox\?$/);
+		assert.match(u.confirms[0]!, /\nblocked\n  x: Operation not permitted\n\nrisk high  writes a dotfile\n\nsandboxed bash writes only in\n  \/.*sandbox-project-.*\n(  .*\n)*  \(not the project's \.git\/config, .*allowed hosts only\)$/);
 		for (const answer of [async () => false, () => Promise.reject(new Error("closed"))]) {
 			u.answer = answer;
 			const no = await s.run(F);
@@ -673,7 +673,7 @@ test("escalation: sudo, git push and rm -r skip the classifier and always go to 
 		}
 	}
 	assert.equal(u.confirms.length, 2);
-	assert.match(u.confirms[1]!, /risk high: bash deletes recursively \(rm -r\), a fixed rule that always asks \(no classifier\)\n/);
+	assert.match(u.confirms[1]!, /risk high  bash deletes recursively \(rm -r\), a fixed rule that always asks \(no classifier\)\n/);
 });
 
 test("escalation: PI_SANDBOX_ESCALATE=off leaves a denied command denied", async () => {
