@@ -545,6 +545,14 @@ test("macOS: a real subagent pi in a repo's subdir cannot write the repo's .git/
 		assert.equal(existsSync(join(repo, ".git/hooks/pre-commit")), false);
 		assert.equal(existsSync(join(repo, ".claude/commands/x.md")), false);
 		assert.equal(existsSync(join(repo, ".vscode/settings.json")), false);
+		// A linked worktree: its .git is a pointer file, which the runtime leaves writable on macOS.
+		const wt = join(repo, "wt");
+		mkdirSync(wt);
+		writeFileSync(join(wt, ".git"), "gitdir: /orig\n");
+		const fromWorktree = await child(wt, ["echo x > top.txt", "echo 'gitdir: /tmp/evil' > .git"]);
+		assert.equal(fromWorktree["echo x > top.txt"], 0);
+		assert.notEqual(fromWorktree["echo 'gitdir: /tmp/evil' > .git"], 0);
+		assert.equal(readFileSync(join(wt, ".git"), "utf8"), "gitdir: /orig\n");
 	} finally {
 		restore();
 		rmSync(repo, { recursive: true, force: true });
@@ -1027,6 +1035,23 @@ test("macOS: a Node child denied a localhost bind is detected; low re-runs it, h
 		assert.match(low.out, /re-ran outside the sandbox/);
 	} finally {
 		await s.shutdown();
+		restore();
+	}
+});
+
+test("macOS: a linked worktree's .git pointer file is write-denied; Linux's runtime denies it itself", () => {
+	const wt = tmp("sandbox-worktree-");
+	writeFileSync(join(wt, ".git"), "gitdir: /orig\n");
+	const dotGit = join(real(wt), ".git");
+	try {
+		seam.platform = () => "darwin";
+		assert.ok(policy(wt).filesystem.denyWrite.includes(dotGit));
+		seam.platform = () => "linux";
+		assert.ok(!policy(wt).filesystem.denyWrite.includes(dotGit));
+		seam.platform = () => "darwin";
+		const plain = tmp("sandbox-project-");
+		assert.ok(!policy(plain).filesystem.denyWrite.includes(join(real(plain), ".git")), "no .git: nothing denied, so git init still works");
+	} finally {
 		restore();
 	}
 });

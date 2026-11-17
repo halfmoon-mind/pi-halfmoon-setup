@@ -156,6 +156,8 @@ export function policy(root: string | undefined): Policy {
 				...[".npm/_logs", ".claude/debug"].map((p) => real(join(home, p))),
 				...["node_modules", "package.json", "package-lock.json", ".npmrc"].map((n) => join(PKG, n)),
 				...(root ? GIT_REDIRECTS.map((n) => join(real(root), ".git", n)) : []),
+				// A linked worktree's .git is a "gitdir:" pointer file, as much a redirect as commondir; Linux's runtime denies it already.
+				...(root && seam.platform() !== "linux" && lstatSync(join(real(root), ".git"), { throwIfNoEntry: false })?.isFile() ? [join(real(root), ".git")] : []),
 			],
 			denyRead: [...[".ssh", ".aws", ".gnupg", ".netrc", ".config/gh"].map((p) => real(join(home, p))), join(agent, "auth.json")],
 			allowRead: [real(join(home, ".ssh/known_hosts")), real(join(home, ".ssh/config"))],
