@@ -256,7 +256,7 @@ test("allow: a success with no UI gets a marker naming the parent session and th
 	try {
 		const { exitCode, out } = await s.run(`(${G(join(HOME, unique(".pi-sandbox-test")))}) 2>&1 | cat`);
 		assert.equal(exitCode, 0);
-		assert.match(out, /exited 0, but writes to ~\/\.pi-sandbox-test-\w+ needs the user's approval; not re-run\. A pi with a UI \(the parent session\) can run this same command to get the prompt; or ask the user to save this as .*sandbox\.json and restart pi: \{"filesystem":\{"allowWrite":\["~\/\.pi-sandbox-test-/);
+		assert.match(out, /exited 0, but writes to ~\/\.pi-sandbox-test-\w+ needs the user's approval; not re-run\. A pi with a UI \(the parent session\) can run this same command to get the prompt; or ask the user to save this as .*sandbox\.json and restart pi: \{"filesystem":\{"allowWrite":\["~\/\.pi-sandbox-test-.*; or ask the user to allow it in .*sandbox\.json, or to run \/sandbox off in their pi/);
 		assert.equal(s.calls.length, 0);
 		assert.equal(s.wrapped.length, 1);
 	} finally {

@@ -54,7 +54,8 @@ export async function start(cwd: string, { ui, files = {}, extra = {} }: { ui?: 
 	for (const [name, text] of Object.entries(files)) writeFileSync(join(process.env.PI_CODING_AGENT_DIR, name), text);
 	const handlers: Record<string, any[]> = {};
 	const tools: Record<string, any> = {};
-	const pi = { on: (event: string, h: any) => (handlers[event] ??= []).push(h), registerTool: (t: any) => (tools[t.name] = t) };
+	const commands: Record<string, any> = {};
+	const pi = { on: (event: string, h: any) => (handlers[event] ??= []).push(h), registerTool: (t: any) => (tools[t.name] = t), registerCommand: (name: string, c: any) => (commands[name] = c) };
 	sandbox(pi as any);
 	compactTools(pi as any);
 	const ctx = { cwd, hasUI: !!ui, ui, mode: ui ? "tui" : "print", sessionManager: { getEntries: () => [], getSessionId: () => "s", getSessionFile: () => undefined }, ...extra };
@@ -63,7 +64,7 @@ export async function start(cwd: string, { ui, files = {}, extra = {} }: { ui?: 
 	const shutdown = async () => {
 		for (const h of handlers.session_shutdown) await h({ reason: "quit" }, ctx);
 	};
-	return { gate, tools, ctx, shutdown, agentDir: process.env.PI_CODING_AGENT_DIR };
+	return { gate, tools, commands, ctx, shutdown, agentDir: process.env.PI_CODING_AGENT_DIR };
 }
 
 export async function bash(command: string, cwd: string) {

@@ -25,7 +25,7 @@ bash는 [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropics/sandbox-
 
 쓰기 가능한 디렉터리를 하나 더할 때마다 bash가 거기에 코드를 심어 나중에 샌드박스 밖에서 실행되게 할 수 있습니다(대화 상자도 이를 알립니다. `~/.npm`, `~/.cache` 같은 도구 캐시에는 코드가 들어 있습니다). 그래서 기본값에는 하나도 없습니다.
 
-실패하면 닫힙니다. 샌드박스가 뜨기 전이나 뜨지 못할 때(로컬 체크아웃에서 `npm ci`를 하지 않아 sandbox-runtime이 없거나, ripgrep이 없거나, Linux에 bubblewrap이나 socat이 없을 때) bash와 검사 대상 도구는 이유와 해결 방법을 담아 막히고, bash가 샌드박스 없이 실행되는 일은 없습니다. `PI_SANDBOX=off pi`는 두 층을 모두 끄고, 시작할 때 경고를 띄웁니다.
+실패하면 닫힙니다. 샌드박스가 뜨기 전이나 뜨지 못할 때(로컬 체크아웃에서 `npm ci`를 하지 않아 sandbox-runtime이 없거나, ripgrep이 없거나, Linux에 bubblewrap이나 socat이 없을 때) bash와 검사 대상 도구는 이유와 해결 방법을 담아 막히고, bash가 샌드박스 없이 실행되는 일은 없습니다. `PI_SANDBOX=off pi`는 두 층을 모두 끄고, 시작할 때 경고를 띄웁니다. 실행 중인 pi에서 `/sandbox`는 상태를 보여 주고, `/sandbox off`는(UI가 있을 때 확인을 거쳐) 그 pi와 이후에 시작하는 서브에이전트와 리뷰 게이트의 두 층을 끄며, `/sandbox on`은 다시 켜고 샌드박스가 뜬 적이 없으면 시작합니다. 사용자만 풀 수 있게 막힌 bash 명령은 모델에게 사용자에게 `sandbox.json`에서 허용하거나 `/sandbox off`를 실행해 달라고 요청하라고 알립니다.
 
 프로젝트가 이 패키지의 체크아웃 자체라면 `node_modules/`, `package.json`, `package-lock.json`, `.npmrc`만 보호합니다. 의존성은 직접 연 터미널에서 바꾸세요. 소스는 계속 수정할 수 있고, 그 수정은 `/reload`, 재시작, 또는 다음 서브에이전트 시작 때 샌드박스 밖에서 실행됩니다. 프로젝트가 로드된 패키지를 품고 있으면 pi가 시작할 때 경고합니다. bash가 패키지 코드를 바꿀 수 없게 하려면 git으로 설치하고 별도 체크아웃에서 작업하거나, 체크아웃을 `filesystem.denyWrite`에 추가하세요.
 

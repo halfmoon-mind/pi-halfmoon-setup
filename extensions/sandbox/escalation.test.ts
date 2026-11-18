@@ -66,7 +66,7 @@ test("escalation: high with no UI does not re-run and tells the model to ask the
 		const { exitCode, out } = await s.run(F);
 		assert.equal(exitCode, 1);
 		assert.doesNotMatch(out, /outside\n/);
-		assert.match(out, /risk high \(writes a dotfile\): needs the user's approval to run outside the sandbox; ask the user/);
+		assert.match(out, /risk high \(writes a dotfile\): needs the user's approval to run outside the sandbox; ask the user to allow it in .*sandbox\.json, or to run \/sandbox off in their pi/);
 	} finally {
 		await s.shutdown();
 		restore();
@@ -87,7 +87,7 @@ test("escalation: high with a UI asks; yes re-runs, no or a rejected dialog does
 			const no = await s.run(F);
 			assert.equal(no.exitCode, 1);
 			assert.doesNotMatch(no.out, /outside\n/);
-			assert.match(no.out, /the user declined running it outside the sandbox/);
+			assert.match(no.out, /the user declined running it outside the sandbox; ask the user to allow it in .*sandbox\.json, or to run \/sandbox off in their pi/);
 		}
 	} finally {
 		await s.shutdown();
@@ -143,7 +143,7 @@ test("escalation: PI_SANDBOX_ESCALATE=off leaves a denied command denied", async
 	const s = await escalating();
 	process.env.PI_SANDBOX_ESCALATE = "off";
 	try {
-		assert.deepEqual(await s.run(F), { exitCode: 1, out: "x: Operation not permitted\n" });
+		assert.deepEqual(await s.run(F), { exitCode: 1, out: `x: Operation not permitted\n\n[sandbox: blocked; blocked by the sandbox; ask the user to allow it in ${join(s.agentDir, "sandbox.json")}, or to run /sandbox off in their pi]\n` });
 		assert.equal(s.calls.length, 0);
 		assert.equal(s.wrapped.length, 1);
 	} finally {
@@ -276,7 +276,7 @@ test("host rating: with no UI, a host rated high while the command ran, or while
 		assert.equal(exitCode, 1);
 		assert.doesNotMatch(out, /outside\n/);
 		assert.equal(s.calls.length, 0);
-		assert.match(out, /a network host was denied .*ask the user to allow it/);
+		assert.match(out, /a network host was denied .*; ask the user to allow it in .*sandbox\.json, or to run \/sandbox off in their pi/);
 		await s.shutdown();
 		let release!: () => void;
 		const pending = new Promise<void>((r) => (release = r));

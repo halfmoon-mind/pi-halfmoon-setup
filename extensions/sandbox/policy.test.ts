@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { createWriteToolDefinition, discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
 import sandbox, { blocked, sandboxedBash } from "./index.ts";
 import { merge, policy, real, risky, seam } from "./policy.ts";
-import { bash, fake, HIGH, HOME, macOS, PKG, restore, start, temps, tmp, unique } from "./test-helpers.ts";
+import { bash, fake, fakeUI, HIGH, HOME, macOS, PKG, restore, start, temps, tmp, unique } from "./test-helpers.ts";
 
 test("before startup, bash refuses to run", async () => {
 	await assert.rejects(sandboxedBash.exec("true", process.cwd(), { onData: () => {} }), /sandbox/);
@@ -219,10 +219,78 @@ test("PI_SANDBOX=off runs bash unwrapped and checks no file tool", async () => {
 		assert.equal(await s.gate("read", { path: "~/.ssh/id_rsa" }), undefined);
 		assert.deepEqual(await bash("echo plain", project), { exitCode: 0, out: "plain\n" });
 		assert.equal(loaded, false);
+		// /sandbox on starts the runtime it never started; no UI needed.
+		await s.commands.sandbox.handler("on", { ...s.ctx, ui: fakeUI().ui });
+		assert.equal(loaded, true);
+		assert.equal(process.env.PI_SANDBOX, undefined);
+		assert.match((await s.gate("read", { path: "~/.ssh/id_rsa" }))!.reason, /credential/);
 	} finally {
 		await s.shutdown();
 		restore();
-		sandbox({ on: () => {} } as any); // back on for the next tests
+		sandbox({ on: () => {}, registerCommand: () => {} } as any); // back on for the next tests
+	}
+});
+
+test("/sandbox off needs a UI and a confirm; /sandbox on turns the same runtime back on", async () => {
+	const project = tmp("sandbox-project-");
+	let loads = 0;
+	let inits = 0;
+	const f = await fake(async () => void inits++);
+	seam.load = async () => (loads++, f.runtime);
+	delete process.env.PI_SANDBOX_ROOT;
+	const u = fakeUI();
+	const s = await start(project, { ui: u.ui });
+	const cmd = (args: string, ctx: any = s.ctx) => s.commands.sandbox.handler(args, ctx);
+	const key = { path: "~/.ssh/id_rsa" };
+	try {
+		await cmd("off", { ...s.ctx, hasUI: false });
+		await cmd("off"); // declined
+		assert.equal(u.confirms.length, 1, "no confirm without a UI");
+		assert.equal(process.env.PI_SANDBOX, undefined);
+		assert.match((await s.gate("read", key))!.reason, /credential/);
+		assert.equal((await bash("echo [$IN_SANDBOX]", project)).out, "[1]\n");
+
+		u.answer = async () => true;
+		await cmd("off");
+		assert.equal(process.env.PI_SANDBOX, "off");
+		assert.equal(await s.gate("read", key), undefined);
+		assert.equal((await bash("echo [$IN_SANDBOX]", project)).out, "[]\n");
+		await cmd("");
+		assert.match(u.notes.at(-1)![0], /^sandbox off/);
+
+		await cmd("on");
+		assert.equal(process.env.PI_SANDBOX, undefined);
+		assert.match((await s.gate("read", key))!.reason, /credential/);
+		assert.equal((await bash("echo [$IN_SANDBOX]", project)).out, "[1]\n");
+		assert.deepEqual([loads, inits], [1, 1], "the runtime is reused, not loaded or initialized again");
+		assert.equal(u.notes.at(-1)![0], "sandbox on");
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("/sandbox on retries a failed startup", async () => {
+	const project = tmp("sandbox-project-");
+	let fail = true;
+	const f = await fake(async () => {
+		if (fail) throw new Error("ripgrep (rg) not found");
+	});
+	seam.load = async () => f.runtime;
+	delete process.env.PI_SANDBOX_ROOT;
+	const u = fakeUI();
+	const s = await start(project, { ui: u.ui });
+	try {
+		assert.match((await s.gate("read", { path: "a.txt" }))!.reason, /ripgrep/);
+		await s.commands.sandbox.handler("", s.ctx);
+		assert.match(u.notes.at(-1)![0], /could not start.*ripgrep/);
+		fail = false;
+		await s.commands.sandbox.handler("on", s.ctx);
+		assert.equal(await s.gate("read", { path: "a.txt" }), undefined);
+		assert.equal(u.notes.at(-1)![0], "sandbox on");
+	} finally {
+		await s.shutdown();
+		restore();
 	}
 });
 
@@ -304,7 +372,7 @@ test("bash runs on the instance whose session started, as under pi's loader, whi
 	delete process.env.PI_SANDBOX_ROOT;
 	process.env.PI_CODING_AGENT_DIR = tmp("sandbox-agent-");
 	const handlers: Record<string, any[]> = {};
-	other.default({ on: (event: string, h: any) => (handlers[event] ??= []).push(h) } as any);
+	other.default({ on: (event: string, h: any) => (handlers[event] ??= []).push(h), registerCommand: () => {} } as any);
 	const ctx = { cwd: project, hasUI: false };
 	try {
 		for (const h of handlers.session_start) await h({}, ctx);
@@ -387,7 +455,7 @@ test("macOS: loaded by pi's own extension loader, the registered bash runs sandb
 	} finally {
 		for (const h of sb?.handlers.get("session_shutdown") ?? []) await h({}, ctx as any);
 		delete (globalThis as any)[Symbol.for("pi-halfmoon-setup/sandbox-exec")];
-		sandbox({ on: () => {} } as any); // this file's instance runs bash again
+		sandbox({ on: () => {}, registerCommand: () => {} } as any); // this file's instance runs bash again
 		process.chdir(cwd);
 		restore();
 		if (existsSync(outside)) rmSync(outside);
@@ -401,7 +469,7 @@ test("macOS: a real subagent pi in a repo's subdir cannot write the repo's .git/
 	writeFileSync(script, `
 		const { default: sandbox, sandboxedBash } = await import(${JSON.stringify(join(PKG, "extensions/sandbox/index.ts"))});
 		const handlers = {};
-		sandbox({ on: (e, h) => (handlers[e] ??= []).push(h) });
+		sandbox({ on: (e, h) => (handlers[e] ??= []).push(h), registerCommand: () => {} });
 		const ctx = { cwd: process.cwd(), hasUI: false };
 		for (const h of handlers.session_start) await h({}, ctx);
 		const out = {};

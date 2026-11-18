@@ -3,7 +3,8 @@
 // openai/gpt-6.1-terra once per session: low allows it, high asks, no UI denies), and cannot read the listed credential paths. pi's in-process file tools (read,
 // grep, find, ls, write, edit, handoff's plan) are checked here against the same paths. sudo, git push,
 // rm -r and .env writes ask first; with no UI they are blocked. Fails closed: until the sandbox is up,
-// or when it cannot start, bash and those tools are blocked. PI_SANDBOX=off turns all of it off.
+// or when it cannot start, bash and those tools are blocked. PI_SANDBOX=off, or a confirmed /sandbox off (which subagents and review gates
+// started afterwards inherit), turns all of it off; /sandbox on turns it back on, starting the sandbox if it is not up.
 // A blocked bash command is rated by openai/gpt-6.1-terra: low re-runs unsandboxed, high asks (no UI: denied) and the host rating; PI_SANDBOX_ESCALATE=off.
 // A write blocked outside the writable dirs, a localhost bind or (macOS) a trustd TLS check first offers that access (session or always; a
 // Flutter/Dart trigger offers its whole set at once, a No sticks for the session); re-run sandboxed, but not after exit 0.
@@ -49,6 +50,7 @@ const declined = new Set<string>(); // offer parts the user said No to this sess
 let config: Policy | undefined;
 let runtime: Runtime | undefined;
 let ready: Promise<void> | undefined; // undefined: startup never ran, or the session shut down
+let starting: Promise<void> | undefined; // set while a startup runs
 let failure: string | undefined;
 const asked = new Map<string, Promise<boolean>>();
 const running = new Map<string, string>(); // run id → command, for the host rating
@@ -239,12 +241,19 @@ function escalationMessage(command: string, denials: string[], reason: string) {
 	].join("\n");
 }
 
+/** What the model can ask the user for when a blocked command needs them. */
+const hint = () => `ask the user to allow it in ${join(getAgentDir(), "sandbox.json")}, or to run /sandbox off in their pi`;
+
 /** After a sandboxed run failed with denial evidence: re-run with no sandbox if rated low or the user approves. */
 async function escalate(command: string, cwd: string, options: Options, first: { exitCode: number | null }, id: string, since: number, lines: string[]) {
-	if (process.env.PI_SANDBOX_ESCALATE === "off") return first;
 	const events = runtime?.SandboxManager.getSandboxViolationStore().getViolationsForCommand(id) ?? [];
 	const denials = [...events.map((e) => String(e.line).slice(0, 300)), ...lines].slice(0, 20);
 	if (!denials.length) return first;
+	const say = (s: string) => options.onData(Buffer.from(`\n[sandbox: blocked; ${s}]\n`));
+	if (process.env.PI_SANDBOX_ESCALATE === "off") {
+		say(`blocked by the sandbox; ${hint()}`);
+		return first;
+	}
 	// One offer per run, minus the parts the user said No to; none left is no offer.
 	const found = offer(denials, config!);
 	let o: Offer | undefined = found && {
@@ -255,11 +264,10 @@ async function escalate(command: string, cwd: string, options: Options, first: {
 	};
 	if (o && !keys(o).length) o = undefined;
 	if (first.exitCode === 0 && !o) return first; // a success only ever offers access
-	const say = (s: string) => options.onData(Buffer.from(`\n[sandbox: blocked; ${s}]\n`));
 	// A low verdict must not override a host denial: the user's own no, or a high rating with no UI to ask.
 	const hostDenied = () => {
 		if (declinedAt < since) return false;
-		if (!ui) say("a network host was denied (rated high, or the classifier failed, and no UI to ask); ask the user to allow it");
+		if (!ui) say(`a network host was denied (rated high, or the classifier failed, and no UI to ask); ${hint()}`);
 		return true;
 	};
 	if (hostDenied()) return first;
@@ -273,7 +281,7 @@ async function escalate(command: string, cwd: string, options: Options, first: {
 		}
 	};
 	if (!ui && o && first.exitCode === 0) {
-		say(`exited 0, but ${what} needs the user's approval; not re-run. A pi with a UI (the parent session) can run this same command to get the prompt; or ask the user to ${paste(o)}`);
+		say(`exited 0, but ${what} needs the user's approval; not re-run. A pi with a UI (the parent session) can run this same command to get the prompt; or ask the user to ${paste(o)}; or ${hint()}`);
 		return first;
 	}
 	if (ui && o) {
@@ -320,10 +328,10 @@ async function escalate(command: string, cwd: string, options: Options, first: {
 		say(`risk low (${v.reason}) → re-ran outside the sandbox`);
 	} else if (!ui) {
 		const fix = o ? `; or ask the user to ${paste(o)}` : "";
-		say(`risk high (${v.reason}): needs the user's approval to run outside the sandbox; ask the user${fix}`);
+		say(`risk high (${v.reason}): needs the user's approval to run outside the sandbox; ${hint()}${fix}`);
 		return first;
 	} else if (!(await ui.confirm("Sandbox: run outside the sandbox?", escalationMessage(command, denials, r ? `${r}, a fixed rule that always asks (no classifier)` : v.reason)).catch(() => false))) {
-		say(`risk high (${v.reason}); the user declined running it outside the sandbox`);
+		say(`risk high (${v.reason}); the user declined running it outside the sandbox; ${hint()}`);
 		return first;
 	} else if (hostDenied()) return first; // denied while the confirm was open
 	else say(`risk high (${v.reason}), approved by the user → re-ran outside the sandbox`);
@@ -360,49 +368,16 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (off) {
-			if (ctx.hasUI) ctx.ui.notify("sandbox: PI_SANDBOX=off, so bash and the file tools run without the sandbox", "warning");
-			return;
-		}
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		session = ctx;
 		asked.clear();
 		declined.clear();
 		declinedAt = 0;
-		failure = undefined;
-		let done!: () => void;
-		ready = new Promise((r) => (done = r));
-		try {
-			try {
-				runtime = await seam.load();
-			} catch (e) {
-				throw new Error(`sandbox-runtime did not load (${(e as Error).message})`);
-			}
-			await runtime.SandboxManager.reset();
-			// The runtime protects .git/config, .git/hooks, rc files and the rest only at and under process.cwd(),
-			// so the writable project is that dir, and only when it is the session's cwd. A UI-less pi (a subagent)
-			// gets it only inside the root it inherited: its cwd may narrow what is writable, never widen it.
-			const here = real(seam.cwd());
-			const inherited = ui ? undefined : process.env.PI_SANDBOX_ROOT;
-			const root = real(ctx.cwd) === here && !PROTECTED_CWD.test(here) && (!inherited || within(real(inherited), here)) ? here : undefined;
-			process.env.PI_SANDBOX_ROOT = root ?? inherited ?? real(ctx.cwd);
-			if (!root && ui) ui.notify(`sandbox: the session dir ${ctx.cwd} is not pi's working dir ${here}, or is inside .git, .claude, .vscode or .idea, so bash may write only the temp dirs`, "warning");
-			const file = join(getAgentDir(), "sandbox.json");
-			const merged = merge(policy(root), existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {}, ctx.cwd);
-			const parsed = runtime.SandboxRuntimeConfigSchema.safeParse(merged);
-			if (!parsed.success) throw new Error(`invalid sandbox policy: ${parsed.error.message}`);
-			config = merged;
-			if (root) ownCommondir(root); // before any command runs, so there is no moment the redirect is writable
-			await runtime.SandboxManager.initialize(parsed.data as SandboxRuntimeConfig, ask);
-			if (ui && root && within(root, PKG)) {
-				ui.notify(`sandbox: this project holds the loaded pi package (${PKG}); edits to its code run unsandboxed on /reload, restart or the next subagent startup`, "warning");
-			}
-		} catch (e) {
-			failure = `sandbox: could not start, so bash and the file tools are blocked: ${(e as Error).message}. ${FIX}`;
-			if (ui) ui.notify(failure, "error");
-		} finally {
-			done();
+		if (off) {
+			if (ctx.hasUI) ctx.ui.notify("sandbox: PI_SANDBOX=off, so bash and the file tools run without the sandbox", "warning");
+			return;
 		}
+		await start(ctx);
 	});
 
 	pi.on("session_shutdown", async () => {
@@ -411,4 +386,66 @@ export default function (pi: ExtensionAPI) {
 		// Idempotent, and a cleanup error must not hide why startup failed.
 		await runtime?.SandboxManager.reset().catch(() => {});
 	});
+
+	pi.registerCommand("sandbox", {
+		description: "Show the sandbox, or switch it for this pi and the subagents and review gates it starts afterwards: /sandbox [on|off]",
+		getArgumentCompletions: (prefix) => ["on", "off"].filter((arg) => arg.startsWith(prefix)).map((arg) => ({ value: arg, label: arg })),
+		async handler(args, ctx) {
+			const arg = args.trim();
+			if (arg !== "" && arg !== "on" && arg !== "off") return ctx.ui.notify("usage: /sandbox [on|off]", "warning");
+			if (arg === "off") {
+				const why = "bash and the file tools will run with no write limits, network allowlist or credential-read denies, here and in the subagents and review gates started afterwards (a command running now stays sandboxed). Turn it off?";
+				if (!ctx.hasUI || (await ctx.ui.confirm("Sandbox: turn off?", why).catch(() => false)) !== true) return ctx.ui.notify("sandbox: not changed (turning it off needs a UI and a confirm)", "warning");
+				off = true;
+				process.env.PI_SANDBOX = "off";
+			}
+			if (arg === "on") {
+				off = false;
+				delete process.env.PI_SANDBOX;
+				if (starting) await starting;
+				else if (!ready || failure) await start(ctx); // never started, failed or shut down; a runtime that is up is reused
+			}
+			const state = off ? "sandbox off: bash and the file tools run without it; /sandbox on turns it back on" : starting ? "sandbox starting" : !ready ? "sandbox not started" : (failure ?? "sandbox on");
+			ctx.ui.notify(state, state === "sandbox on" ? "info" : "warning");
+		},
+	});
+}
+
+/** Starts the runtime with sandbox.json's policy; bash and the checked tools wait for it, and are blocked if it fails. */
+async function start(ctx: ExtensionContext) {
+	failure = undefined;
+	let done!: () => void;
+	ready = starting = new Promise((r) => (done = r));
+	try {
+		try {
+			runtime = await seam.load();
+		} catch (e) {
+			throw new Error(`sandbox-runtime did not load (${(e as Error).message})`);
+		}
+		await runtime.SandboxManager.reset();
+		// The runtime protects .git/config, .git/hooks, rc files and the rest only at and under process.cwd(),
+		// so the writable project is that dir, and only when it is the session's cwd. A UI-less pi (a subagent)
+		// gets it only inside the root it inherited: its cwd may narrow what is writable, never widen it.
+		const here = real(seam.cwd());
+		const inherited = ui ? undefined : process.env.PI_SANDBOX_ROOT;
+		const root = real(ctx.cwd) === here && !PROTECTED_CWD.test(here) && (!inherited || within(real(inherited), here)) ? here : undefined;
+		process.env.PI_SANDBOX_ROOT = root ?? inherited ?? real(ctx.cwd);
+		if (!root && ui) ui.notify(`sandbox: the session dir ${ctx.cwd} is not pi's working dir ${here}, or is inside .git, .claude, .vscode or .idea, so bash may write only the temp dirs`, "warning");
+		const file = join(getAgentDir(), "sandbox.json");
+		const merged = merge(policy(root), existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {}, ctx.cwd);
+		const parsed = runtime.SandboxRuntimeConfigSchema.safeParse(merged);
+		if (!parsed.success) throw new Error(`invalid sandbox policy: ${parsed.error.message}`);
+		config = merged;
+		if (root) ownCommondir(root); // before any command runs, so there is no moment the redirect is writable
+		await runtime.SandboxManager.initialize(parsed.data as SandboxRuntimeConfig, ask);
+		if (ui && root && within(root, PKG)) {
+			ui.notify(`sandbox: this project holds the loaded pi package (${PKG}); edits to its code run unsandboxed on /reload, restart or the next subagent startup`, "warning");
+		}
+	} catch (e) {
+		failure = `sandbox: could not start, so bash and the file tools are blocked: ${(e as Error).message}. ${FIX}`;
+		if (ui) ui.notify(failure, "error");
+	} finally {
+		starting = undefined;
+		done();
+	}
 }
