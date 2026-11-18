@@ -1,6 +1,6 @@
 // Run: node --import ./extensions/test-hooks.ts --test extensions/subagent/subagent.test.ts
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -159,4 +159,26 @@ test("collapsed, a subagent result is one row per agent: its answer's first line
 	const preview = shown("parallel", [checked, starting], {}, { expanded: true, isPartial: true }).join("\n");
 	for (const part of ["─── planner ✓", "→ read a.ts", "Checking the types."]) assert.ok(preview.includes(part), part);
 	assert.doesNotMatch(preview, /now:/);
+});
+
+test("an aborted subagent that ignores SIGTERM is killed with SIGKILL after 5s", { timeout: 15000 }, async () => {
+	freshAgentDir();
+	// Stand-in pi that traps SIGTERM and never exits on its own.
+	const dir = mkdtempSync(join(tmpdir(), "fake-pi-"));
+	const ready = join(dir, "ready");
+	process.argv[1] = join(dir, "pi.mjs");
+	writeFileSync(
+		process.argv[1],
+		`import { writeFileSync } from "node:fs";
+		process.on("SIGTERM", () => {});
+		writeFileSync(${JSON.stringify(ready)}, "");
+		setInterval(() => {}, 1000);`,
+	);
+	let tool: any;
+	subagent({ registerTool: (def: any) => (tool = def) } as any);
+	const abort = new AbortController();
+	const run = tool.execute("call-1", { agent: "scout", task: "hang" }, abort.signal, undefined, { cwd: dir, model: undefined, hasUI: false });
+	while (!existsSync(ready)) await new Promise((r) => setTimeout(r, 50));
+	abort.abort();
+	await assert.rejects(run, /aborted/);
 });
