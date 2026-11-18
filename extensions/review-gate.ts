@@ -258,7 +258,12 @@ export default function (pi: ExtensionAPI) {
 
 		ctx.ui.setStatus("review", "reviewing…");
 		// pi clears its working loader at agent_end, before this hook, so a widget is what shows the wait.
-		ctx.ui.setWidget("review", [ctx.ui.theme.fg("accent", "GPT reviewing the changes…")]);
+		// The elapsed time shows the review is still going: it takes minutes while pi looks idle.
+		const reviewStart = Date.now();
+		const showReview = (s: number) =>
+			ctx.ui.setWidget("review", [ctx.ui.theme.fg("accent", `GPT reviewing the changes…${s ? ` ${s >= 60 ? `${Math.floor(s / 60)}m` : ""}${s % 60}s` : ""}`)]);
+		let shown = 0;
+		showReview(0);
 		let output = "";
 		let failure = "";
 		let result: Awaited<ReturnType<typeof runSingleAgent>> | undefined;
@@ -268,6 +273,8 @@ export default function (pi: ExtensionAPI) {
 		const poll = setInterval(() => {
 			try {
 				if (ctx.hasPendingMessages()) pending.abort();
+				const s = Math.floor((Date.now() - reviewStart) / 1000);
+				if (s !== shown && !pending.signal.aborted) showReview((shown = s));
 			} catch {
 				pending.abort();
 			}
