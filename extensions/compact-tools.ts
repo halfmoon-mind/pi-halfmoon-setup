@@ -144,13 +144,14 @@ export default function (pi: ExtensionAPI) {
 	const parameters = Type.Object({
 		...bash.parameters.properties,
 		timeout: Type.Optional(Type.Number({ description: `Timeout in seconds (default ${TIMEOUT}); give a larger one for a command that needs longer` })),
-		description: Type.Optional(
-			Type.String({ description: "What this command does, in 5-10 words, in the language the user writes in. Shown to the user in place of the command." }),
-		),
+		// Required: an optional one was never written by Sonnet (0 of 28 calls), only by Opus.
+		description: Type.String({ description: "What this command does, in 5-10 words, in the language the user writes in. Shown to the user in place of the command." }),
 	});
 	pi.registerTool({
 		...bash,
 		parameters,
+		// A call without one still runs (and shows its command): validation comes after this.
+		prepareArguments: (args: any) => (args && typeof args === "object" && args.description === undefined ? { ...args, description: "" } : args),
 		execute: (id, params, ...rest) => bash.execute(id, { ...params, timeout: params.timeout ?? TIMEOUT }, ...rest),
 		renderCall: shortCallWhenCollapsed(bash.renderCall!),
 		renderResult: hideWhenCollapsed(bash.renderResult!),

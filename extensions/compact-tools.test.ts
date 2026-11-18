@@ -19,7 +19,9 @@ test("pi's looking-around tools and bash are all replaced", () => {
 	assert.deepEqual(Object.keys(tools).sort(), ["bash", "find", "grep", "ls", "read"]);
 	assert.ok(tools.read.execute && tools.read.renderShell === "self");
 	assert.ok(tools.bash.parameters.properties.description);
-	assert.deepEqual(tools.bash.parameters.required, ["command"]);
+	assert.deepEqual(tools.bash.parameters.required, ["command", "description"]);
+	// A call that leaves description out still passes validation.
+	assert.deepEqual(tools.bash.prepareArguments({ command: "ls" }), { command: "ls", description: "" });
 });
 
 test("bash times out after 600s unless the call gives its own timeout", async () => {
