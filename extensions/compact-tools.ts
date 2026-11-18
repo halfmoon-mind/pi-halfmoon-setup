@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { sandboxedBash } from "./sandbox.ts";
+import { sandboxedBash } from "./sandbox/index.ts";
 
 type RenderResult = NonNullable<ToolDefinition["renderResult"]>;
 type RenderCall = NonNullable<ToolDefinition["renderCall"]>;
@@ -137,7 +137,7 @@ export default function (pi: ExtensionAPI) {
 	for (const def of [createGrepToolDefinition(process.cwd()), createFindToolDefinition(process.cwd()), createLsToolDefinition(process.cwd())]) {
 		pi.registerTool(compact(def));
 	}
-	// bash runs in sandbox.ts's OS sandbox; the call keeps the command as the model wrote it.
+	// bash runs in sandbox/index.ts's OS sandbox; the call keeps the command as the model wrote it.
 	const bash = createBashToolDefinition(process.cwd(), { operations: sandboxedBash });
 	// pi's bash has no default timeout, so a command that never ends (a grep from ~) held the turn until Esc.
 	const TIMEOUT = 600;

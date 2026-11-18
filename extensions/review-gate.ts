@@ -18,7 +18,7 @@ import { type BoundaryContextPreview, type ExtensionAPI, type ExtensionContext, 
 import { gated, parsePlan, runCheck } from "./checks.ts";
 import { activePlan, steps } from "./handoff.ts";
 import { discoverAgents } from "./subagent/agents.ts";
-import { getResultOutput, isFailedResult, runSingleAgent } from "./subagent/index.ts";
+import { getResultOutput, isFailedResult, runSingleAgent } from "./subagent/run.ts";
 import { Type } from "typebox";
 
 const MAX_REVIEWS = 3;
@@ -105,7 +105,7 @@ const valid = (v: any): v is Verdict =>
 	typeof v === "object" && v !== null && [Object.prototype, null].includes(Object.getPrototypeOf(v)) && Object.keys(v).length === 2 &&
 	(v.decision === "ALLOW" || v.decision === "BLOCK") && typeof v.reason === "string" && v.reason.length <= 200;
 
-// A review with no verdict line: gpt-6.1-terra reads one from it (as sandbox.ts's classifier does). Exactly one valid call, else undefined.
+// A review with no verdict line: gpt-6.1-terra reads one from it (as sandbox/index.ts's classifier does). Exactly one valid call, else undefined.
 async function extract(ctx: ExtensionContext, output: string, signal: AbortSignal): Promise<Verdict | undefined> {
 	try {
 		const model = ctx.modelRegistry.find("openai", "gpt-6.1-terra");

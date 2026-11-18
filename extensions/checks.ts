@@ -6,7 +6,8 @@
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { risky, sandboxedBash } from "./sandbox.ts";
+import { sandboxedBash } from "./sandbox/index.ts";
+import { risky } from "./sandbox/policy.ts";
 
 const TAIL = 2000;
 const NEW = / \(new\)$/;

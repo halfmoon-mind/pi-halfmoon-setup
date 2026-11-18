@@ -21,7 +21,7 @@ import { join, sep } from "node:path";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import type { ContextUsage, ExtensionAPI, ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { formatTokens } from "./subagent/index.ts";
+import { formatTokens } from "./subagent/render.ts";
 
 const BAR_CELLS = 10;
 // ponytail: `git status` at most this often, while the footer renders; a file watcher if this lags.
