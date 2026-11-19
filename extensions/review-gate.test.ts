@@ -105,6 +105,7 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	writeFileSync(join(repo, "a.txt"), "5\n");
 	assert.equal(await settle(), undefined);
 	assert.match(readFileSync(log, "utf8").split("\n---\n").at(-2)!, /follows the plan in docs\/plans\/bump\.md/);
+	assert.doesNotMatch(readFileSync(log, "utf8").split("\n---\n").at(-2)!, /## Requirements/, "a plan without requirements adds no requirement check");
 
 	// A plan finished before this prompt does not judge it.
 	const lastTask = () => readFileSync(log, "utf8").split("\n---\n").at(-2)!;
@@ -116,10 +117,12 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	assert.match(lastTask(), /Bumped a\.txt to 2\.$/);
 
 	// Plans stay out of git, so a tick alone is a change, and it is reviewed against the plan.
-	writeFileSync(join(repo, "docs/plans/bump.md"), "- [x] 1. bump a.txt\n- [x] 2. bump again\n");
+	writeFileSync(join(repo, "docs/plans/bump.md"), '- [x] 1. bump a.txt\n- [x] 2. bump again\n## Sources\n- spec.md\n## Requirements\n- R1. "bump twice" — src: spec.md - step: 2\n');
 	assert.equal(await settle(), undefined);
 	assert.equal(reviewCount(), 5);
 	assert.match(lastTask(), /follows the plan/);
+	assert.match(lastTask(), /`## Requirements` quote its `## Sources`[\s\S]*file:line[\s\S]*`out:`/);
+	assert.match(lastTask(), /mapped steps are all ticked[\s\S]*never for the part left to the open steps/, "a requirement spread over steps is not blocked mid-plan");
 	writeFileSync(join(repo, "docs/plans/bump.md"), "- [x] 1. bump a.txt\n- [x] 2. bump again\n- [ ] 3. once more\n");
 	writeFileSync(join(repo, "a.txt"), "8\n");
 	assert.equal(await settle(), undefined);

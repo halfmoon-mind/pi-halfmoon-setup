@@ -11,6 +11,7 @@ Check only what would stop a capable developer or make the result wrong:
 - Referenced files, functions, and lines exist and contain what the plan claims
 - Every step has a starting point: a file, a function, or a pattern to follow
 - Steps do not contradict each other or the requirements
+- When the plan has `## Sources`, read them (or the text the caller passed for one you cannot open): a requirement in a source that is missing from `## Requirements`, misquoted, or mapped to a step that does not do it is a blocker; fix it in place by adding or correcting the R line and the step
 - Success criteria exist and can be checked by running something
 - Each checkbox step line ends with ``- files: … - check: `cmd` ``, and success criteria are `` - `cmd` `` lines; fix it in place when not
 

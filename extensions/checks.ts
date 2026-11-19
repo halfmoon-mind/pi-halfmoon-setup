@@ -16,13 +16,17 @@ const NEW = / \(new\)$/;
 export const gated = (mode: string) => mode === "tui" || (mode === "print" && process.env.PI_EVAL === "1");
 
 export type Step = { n: number; done: boolean; files: string[]; check?: string };
+/** A `## Requirements` line: `- R1. "<quote>" — src: <where> - step: 2, 3` or `… - out: <reason, who agreed>`. */
+export type Requirement = { id: string; steps: number[]; out?: string };
 
-export function parsePlan(text: string): { steps: Step[]; criteria: string[] } {
+export function parsePlan(text: string): { steps: Step[]; criteria: string[]; requirements: Requirement[]; sources: string[] } {
 	const steps: Step[] = [];
 	const criteria: string[] = [];
-	let inCriteria = false;
+	const requirements: Requirement[] = [];
+	const sources: string[] = [];
+	let section = "";
 	for (const line of text.split("\n")) {
-		if (/^#/.test(line)) inCriteria = /^##\s+Success criteria\s*$/i.test(line);
+		if (/^#/.test(line)) section = line.match(/^##\s+(.*?)\s*$/)?.[1].toLowerCase() ?? "";
 		const m = line.match(/^\s*[-*] \[( |x|X)\] (\d+)\. /);
 		if (m) {
 			// Metadata lives on the checkbox line only; prose on later lines never supplies it.
@@ -34,18 +38,27 @@ export function parsePlan(text: string): { steps: Step[]; criteria: string[] } {
 				files: (files ?? "").split(",").map((f) => f.trim().replace(/`/g, "")).filter(Boolean),
 				...(check ? { check } : {}),
 			});
-		} else if (inCriteria) {
+		} else if (section === "success criteria") {
 			// ponytail: a command containing a backtick cannot be written.
 			const c = line.match(/^\s*- `([^`]+)`\s*$/)?.[1];
 			if (c) criteria.push(c);
+		} else if (section === "sources") {
+			const s = line.match(/^\s*- (.+?)\s*$/)?.[1];
+			if (s) sources.push(s);
+		} else if (section === "requirements") {
+			const id = line.match(/^\s*- (R\d+)\. /)?.[1];
+			if (!id) continue;
+			const ns = line.match(/ - step: (\d+(?:\s*,\s*\d+)*)\s*$/)?.[1];
+			const out = line.match(/ - out: (.+?)\s*$/)?.[1];
+			requirements.push({ id, steps: ns ? ns.split(",").map(Number) : [], ...(out ? { out } : {}) });
 		}
 	}
-	return { steps, criteria };
+	return { steps, criteria, requirements, sources };
 }
 
 /** What keeps a plan from the step format, or [] when it is clean. */
 export function lintPlan(cwd: string, text: string): string[] {
-	const { steps, criteria } = parsePlan(text);
+	const { steps, criteria, requirements, sources } = parsePlan(text);
 	const problems: string[] = [];
 	if (!steps.length) problems.push("no steps: each step is one line like `- [ ] 1. <what> - files: a.ts - check: `<command>``");
 	for (const s of steps) {
@@ -55,6 +68,16 @@ export function lintPlan(cwd: string, text: string): string[] {
 		for (const f of s.files) if (!NEW.test(f) && !existsSync(resolve(cwd, f))) problems.push(`step ${s.n}: ${f} does not exist (mark a new file \`${f} (new)\`)`);
 	}
 	if (!criteria.length) problems.push("no success criteria commands");
+	// Requirements trace their sources to steps; a plan with neither section lints as before.
+	if (sources.length && !requirements.length) problems.push('## Sources lists documents but ## Requirements has no `- R1. "<quote>" — src: <where> - step: N` lines');
+	if (requirements.length && !sources.length) problems.push("## Requirements has lines but ## Sources lists no documents");
+	const numbers = new Set(steps.map((s) => s.n));
+	for (const r of requirements) {
+		if (!r.steps.length && !r.out) problems.push(`${r.id} maps to no step (end it with - step: N or - out: <reason>)`);
+		// `out:` means the user agreed, and the review gate skips it; an open question is not that yet.
+		if (r.out && /\bunconfirmed\b/i.test(r.out)) problems.push(`${r.id} is unconfirmed: ask the user, then end it with - step: N or - out: <their answer>`);
+		for (const n of r.steps) if (!numbers.has(n)) problems.push(`${r.id} maps to step ${n}, which does not exist`);
+	}
 	return problems;
 }
 

@@ -30,6 +30,8 @@ test("parsePlan reads each checkbox line's files and check, and the success crit
 			{ n: 3, done: true, files: [] },
 		],
 		criteria: ["npm test", "! git check-ignore -q x"],
+		requirements: [],
+		sources: [],
 	});
 });
 
@@ -46,6 +48,34 @@ test("lintPlan names each problem, and passes a clean plan", () => {
 	mkdirSync(join(cwd, "bench/agent/tasks"), { recursive: true });
 	assert.deepEqual(lintPlan(cwd, clean), [], "a marked-new file may exist already");
 	assert.deepEqual(lintPlan(cwd, "- [ ] 1. a - files: a.ts - check: `true`\n"), ["no success criteria commands"]);
+});
+
+test("Sources and Requirements: each requirement maps to an existing step or is marked out", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "checks-"));
+	writeFileSync(join(cwd, "a.ts"), "");
+	const clean = "- [ ] 1. a - files: a.ts - check: `true`\n## Success criteria\n- `true`\n";
+	const sources = "## Sources\n- docs/spec.pdf\n- https://x.notion.site/p\n";
+	const r1 = '- R1. "9806 409 already finished" — src: spec p.12 - step: 1\n';
+	const r3 = '- R3. "PUT fails" — src: spec p.6 - out: user agreed 403 re-presign x2 (2026-11-17)\n';
+	const REQ = `${clean}${sources}## Requirements\n${r1}- R2. "webp" — src: spec p.3 - step: 1, 9\n${r3}- R4. "doneCount" — src: spec p.8\n`;
+	const parsed = parsePlan(REQ);
+	assert.deepEqual(parsed.sources, ["docs/spec.pdf", "https://x.notion.site/p"]);
+	assert.deepEqual(parsed.requirements, [
+		{ id: "R1", steps: [1] },
+		{ id: "R2", steps: [1, 9] },
+		{ id: "R3", steps: [], out: "user agreed 403 re-presign x2 (2026-11-17)" },
+		{ id: "R4", steps: [] },
+	]);
+	assert.deepEqual(parsed.criteria, ["true"], "criteria end at the next section");
+	assert.deepEqual(lintPlan(cwd, REQ), ["R2 maps to step 9, which does not exist", "R4 maps to no step (end it with - step: N or - out: <reason>)"]);
+	assert.deepEqual(lintPlan(cwd, clean + sources).map((p) => p.split(" but ")[0]), ["## Sources lists documents"]);
+	assert.deepEqual(lintPlan(cwd, `${clean}## Requirements\n${r1}`), ["## Requirements has lines but ## Sources lists no documents"]);
+	assert.deepEqual(lintPlan(cwd, `${clean}${sources}## Requirements\n${r1}${r3}`), []);
+	assert.deepEqual(
+		lintPlan(cwd, `${clean}${sources}## Requirements\n- R5. "send icon" — src: figma 5392:18299 - out: unconfirmed, asked the user\n`),
+		["R5 is unconfirmed: ask the user, then end it with - step: N or - out: <their answer>"],
+		"an open question is not an agreed out, which the review gate would skip",
+	);
 });
 
 test("gated: tui always, print only under PI_EVAL=1, json and rpc never", () => {
