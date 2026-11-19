@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
-import { isRetryableAssistantError } from "@earendil-works/pi-ai";
+import { createInitialSystemMessage, isRetryableAssistantError } from "@earendil-works/pi-ai";
 import extension, { formatRateLimits } from "./index.ts";
 import { buildPrompt } from "./src/prompt-builder.ts";
 
@@ -53,12 +53,22 @@ writeFileSync(
 process.env.PATH = dir + delimiter + process.env.PATH;
 
 let provider: any;
-const tools = [{ name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } } } }];
+const read = { name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } } }, exposure: "direct" };
+const figmaX = { name: "mcp__figma__x", description: "A figma tool", parameters: { type: "object", properties: {} }, exposure: "deferred" };
+const tools = [
+	read,
+	{ name: "find", description: "Find files", parameters: { type: "object", properties: {} }, exposure: "direct" },
+	figmaX,
+	{ name: "mcp__figma__y", description: "A codemode tool", parameters: { type: "object", properties: {} }, exposure: "codemode" },
+	{ name: "secret", description: "A hidden tool", parameters: { type: "object", properties: {} }, exposure: "hidden" },
+];
 const handlers: Record<string, any> = {};
+let active = ["read"];
 extension({
 	on: (name: string, handler: any) => (handlers[name] = handler),
 	getAllTools: () => tools,
-	setActiveTools() {},
+	getActiveTools: () => active,
+	setActiveTools: (names: string[]) => (active = names),
 	registerProvider: (_id: string, def: any) => (provider = def),
 } as any);
 const opus = { ...provider.models.find((m: any) => m.id.includes("opus")), provider: "pi-claude-cli", api: "pi-claude-cli" };
@@ -158,20 +168,47 @@ test("claude waits in its MCP call for the result pi sends next, then goes on in
 		{ type: "result", subtype: "success" },
 	];
 	const fake = { steps: [{ read: true }, { lines: toolUse }, { call: "t1" }, { lines: say("a.txt says A") }, { read: true }, { read: true }, { lines: say("bye") }, { exit: 0 }] };
+	const sys = createInitialSystemMessage(undefined, [read as any])!;
 	const ask = { role: "user", content: "read /a.txt", timestamp: 1 };
 
-	const call = await run(fake, [ask]);
+	const call = await run(fake, [sys, ask]);
 	assert.deepEqual([call.stopReason, call.content], ["toolUse", [{ type: "toolCall", id: "t1", name: "read", arguments: { path: "/a.txt" } }]]);
 	const result = { role: "toolResult", toolCallId: "t1", toolName: "read", content: [{ type: "text", text: "A" }], isError: false, timestamp: 2 };
-	const answer = await run(fake, [ask, call, result]);
+	const answer = await run(fake, [sys, ask, call, result]);
 	assert.deepEqual(answer.content, [{ type: "text", text: "a.txt says A" }]);
-	const bye = await run(fake, [ask, call, result, answer, { role: "user", content: "thanks", timestamp: 3 }, { role: "user", content: "note", timestamp: 4 }]);
+	const bye = await run(fake, [sys, ask, call, result, answer, { role: "user", content: "thanks", timestamp: 3 }, { role: "user", content: "note", timestamp: 4 }]);
 	assert.deepEqual(bye.content, [{ type: "text", text: "bye" }]);
 
 	// The one process got the prompt, then pi's tool result as the MCP call's result, then only the new messages (a note after the user's message does not restart it).
 	const { inputs, toolResults } = recorded();
 	assert.deepEqual(toolResults, [{ content: [{ type: "text", text: "A" }], isError: false }]);
 	assert.deepEqual(inputs.map((input: any) => input.message.content), ["USER:\nread /a.txt", [{ type: "text", text: "thanks" }], [{ type: "text", text: "note" }]]);
+});
+
+test("claude gets only the tools pi declares, and restarts with a tool pi loads later", async () => {
+	const lines = [event({ type: "message_stop" }), { type: "result", subtype: "success" }];
+	const schema = () => {
+		const { pid, args } = recorded();
+		const server = JSON.parse(readFileSync(flag(args, "--mcp-config"), "utf8")).mcpServers["custom-tools"];
+		return { pid, names: JSON.parse(readFileSync(server.args[1], "utf8")).map((t: any) => t.name) };
+	};
+	const sys = createInitialSystemMessage(undefined, [read as any])!;
+	const hi = { role: "user", content: "hi", timestamp: 1 };
+
+	const reply = await run({ lines, hang: true }, [sys, hi]);
+	const first = schema();
+	assert.deepEqual(first.names, ["read"]);
+
+	const loaded = { role: "system", content: "", toolsAdded: [figmaX], timestamp: 3 };
+	await run({ lines }, [sys, hi, reply, loaded, { role: "user", content: "go", timestamp: 4 }]);
+	const second = schema();
+	assert.notEqual(second.pid, first.pid);
+	assert.deepEqual(second.names, ["read", "mcp__figma__x"]);
+});
+
+test("session_start activates pi's direct tools, never deferred, codemode or hidden ones", async () => {
+	await handlers.session_start({}, { hasUI: false });
+	assert.deepEqual(active, ["read", "find"]);
 });
 
 test("a claude crash ends the turn with claude's stderr", async () => {

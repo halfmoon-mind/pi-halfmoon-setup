@@ -12,6 +12,9 @@ const release = `${install}/releases/${readFileSync(`${install}/current-version`
 // Resolve from pi-coding-agent itself, as pi does: its dependencies may be hoisted or nested under it.
 const piRoot = pathToFileURL(`${release}/node_modules/@earendil-works/pi-coding-agent/package.json`).href;
 
+// The sandbox tests expect it unset; a pi run with /sandbox off passes PI_SANDBOX=off to the shells it starts.
+delete process.env.PI_SANDBOX;
+
 registerHooks({
 	resolve(specifier, context, next) {
 		const name = specifier.replace(/^@mariozechner\//, "@earendil-works/");

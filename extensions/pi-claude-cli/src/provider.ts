@@ -8,8 +8,8 @@
  *    MCP call (mcp-config.ts) until pi runs the tool and sends the result on
  *    its next call, then goes on in the same process.
  * 2. After a reply, pi's next user message goes to the same process.
- * 3. Anything else (the first call, another model, effort or system prompt,
- *    a compacted or edited history, an abort, an error) starts a new process
+ * 3. Anything else (the first call, another model, effort, system prompt or
+ *    tool set, a compacted or edited history, an abort, an error) starts a new process
  *    with pi's whole conversation flattened into one prompt.
  *
  * Hardened lifecycle: inactivity timeout while the CLI replies, exit handler

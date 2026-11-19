@@ -8,10 +8,11 @@
  * patched for pi 0.99's context shape, to drop the cross-spawn dependency, to report
  * a CLI error instead of ending the turn with an empty reply, and to keep one CLI process
  * across pi's calls (pi's tools reach it over MCP) instead of resuming a CLI session that
- * lost the tool calls, so the CLI keeps its thinking and its prompt cache.
+ * lost the tool calls, so the CLI keeps its thinking and its prompt cache, and to give the
+ * CLI only the tools pi declares to the model (not deferred, codemode or hidden ones).
  */
 
-import { getCurrentSystemPrompt, getModels } from "@mariozechner/pi-ai";
+import { getCurrentSystemPrompt, getCurrentTools, getModels } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { streamViaCli } from "./src/provider.js";
 import {
@@ -46,43 +47,28 @@ export function formatRateLimits(
   );
 }
 
-let mcpConfigPath: string | undefined;
-let mcpConfigResolved = false;
+/** MCP config paths by the tool definitions' JSON. */
+const mcpConfigs = new Map<string, string | undefined>();
 
 /**
- * Lazily generate MCP config on first request (not at load time).
- * pi.getAllTools() fails during extension loading; this defers it
- * until the pi runtime is fully initialized.
- *
- * Only locks (sets mcpConfigResolved) when getAllTools() returns a
- * real array — if it returns undefined/null (registry not ready),
- * we retry on the next request. Once the registry is ready we
- * commit to the result even if there are zero tools.
+ * The MCP config for the tools pi declares in this request. A changed set
+ * (a tool_search load) gets a new path, which restarts the CLI with it.
  *
  * Uses warn-don't-block: failure logs a warning but does not
  * prevent the provider from answering (without pi's tools).
  */
-function ensureMcpConfig(pi: ExtensionAPI): string | undefined {
-  if (mcpConfigResolved) return mcpConfigPath;
+function mcpConfigFor(tools: any[]): string | undefined {
+  const toolDefs = getToolDefs(tools);
+  const json = JSON.stringify(toolDefs);
+  if (mcpConfigs.has(json)) return mcpConfigs.get(json);
+  let path: string | undefined;
   try {
-    const allTools = pi.getAllTools();
-
-    // Registry not ready yet — don't lock, retry on next call
-    if (!Array.isArray(allTools)) {
-      return mcpConfigPath;
-    }
-
-    // Registry is ready — lock regardless of whether tools exist
-    mcpConfigResolved = true;
-
-    const toolDefs = getToolDefs(pi);
-    if (toolDefs.length > 0) {
-      mcpConfigPath = writeMcpConfig(toolDefs);
-    }
+    if (toolDefs.length > 0) path = writeMcpConfig(toolDefs);
   } catch (err) {
     ui?.notify(`pi-claude-cli: MCP config generation failed, pi's tools unavailable: ${err}`, "warning");
   }
-  return mcpConfigPath;
+  mcpConfigs.set(json, path);
+  return path;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -101,13 +87,14 @@ export default function (pi: ExtensionAPI) {
       maxTokens: model.maxTokens,
     }));
 
-    // Ensure all registered tools are active so pi can execute them.
-    // Some tools (find, grep, ls) are registered but not activated by default.
+    // Activate pi's direct tools too: some (find, grep, ls) are registered but not active by default.
+    // Deferred, codemode and hidden tools stay as pi set them, so they are not declared to the model.
     pi.on("session_start", async (_event, ctx) => {
       ui = ctx.hasUI ? ctx.ui : undefined;
       const allTools = pi.getAllTools();
       if (Array.isArray(allTools)) {
-        pi.setActiveTools(allTools.map((t: any) => t.name));
+        const direct = allTools.filter((t: any) => t.exposure === "direct").map((t: any) => t.name);
+        pi.setActiveTools([...new Set([...pi.getActiveTools(), ...direct])]);
       }
     });
 
@@ -117,7 +104,7 @@ export default function (pi: ExtensionAPI) {
       api: "pi-claude-cli",
       models,
       streamSimple: (model, context, options) => {
-        const configPath = ensureMcpConfig(pi);
+        const configPath = mcpConfigFor(getCurrentTools(context.messages));
         // pi >= 0.9x sends the prompt as role:"system" messages; streamViaCli expects the legacy shape.
         const legacy = {
           systemPrompt: getCurrentSystemPrompt(context.messages),

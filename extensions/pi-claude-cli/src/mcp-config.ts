@@ -6,6 +6,7 @@
  * result to deliverToolResult, so the CLI gets a real tool result and goes on.
  */
 
+import { createHash } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
@@ -21,19 +22,13 @@ export interface McpToolDef {
 }
 
 /**
- * Get pi's tool definitions, built-in and custom alike.
+ * The MCP definitions of the given pi tools.
  *
- * @param pi - The pi ExtensionAPI instance
- * @returns Array of tool definitions (empty if pi's registry is not ready)
+ * @param tools - The tools pi declares to the model
+ * @returns Array of tool definitions
  */
-export function getToolDefs(pi: any): McpToolDef[] {
-  const allTools = pi.getAllTools();
-
-  if (!Array.isArray(allTools)) {
-    return [];
-  }
-
-  return allTools.map((tool: any) => ({
+export function getToolDefs(tools: any[]): McpToolDef[] {
+  return tools.map((tool: any) => ({
     name: tool.name,
     description: tool.description,
     inputSchema: tool.parameters,
@@ -56,7 +51,12 @@ export function deliverToolResult(id: string, result: unknown): void {
   reply(result);
 }
 
-function listen(socketPath: string): void {
+const socketPath = join(tmpdir(), `pi-claude-cli-${process.pid}.sock`);
+let listening = false;
+
+function listen(): void {
+  if (listening) return;
+  listening = true;
   rmSync(socketPath, { force: true });
   createServer((conn) => {
     // The CLI may be killed while it waits, closing the connection.
@@ -94,15 +94,18 @@ function listen(socketPath: string): void {
  * @returns Path to the MCP config file
  */
 export function writeMcpConfig(toolDefs: McpToolDef[]): string {
+  // Named by the tool set, so a changed set gets a new config path and a new CLI process.
+  const json = JSON.stringify(toolDefs);
+  const hash = createHash("sha256").update(json).digest("hex").slice(0, 12);
+
   // Write tool schemas to temp file
   const schemaFilePath = join(
     tmpdir(),
-    `pi-claude-mcp-schemas-${process.pid}.json`,
+    `pi-claude-mcp-schemas-${process.pid}-${hash}.json`,
   );
-  writeFileSync(schemaFilePath, JSON.stringify(toolDefs));
+  writeFileSync(schemaFilePath, json);
 
-  const socketPath = join(tmpdir(), `pi-claude-cli-${process.pid}.sock`);
-  listen(socketPath);
+  listen();
 
   // Resolve path to the schema server .cjs file (sibling of this module)
   const __filename = fileURLToPath(import.meta.url);
@@ -122,7 +125,7 @@ export function writeMcpConfig(toolDefs: McpToolDef[]): string {
   // Write config to temp file
   const configFilePath = join(
     tmpdir(),
-    `pi-claude-mcp-config-${process.pid}.json`,
+    `pi-claude-mcp-config-${process.pid}-${hash}.json`,
   );
   writeFileSync(configFilePath, JSON.stringify(config));
 
