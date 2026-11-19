@@ -43,7 +43,8 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	const notices: string[] = [];
 	const statuses: Record<string, string | undefined> = {};
 	const widgets: Record<string, string[] | undefined> = {};
-	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), setWidget: (key: string, lines?: string[]) => (widgets[key] = lines), notify: (msg: string) => notices.push(msg) };
+	let esc: ((data: string) => any) | undefined;
+	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), setWidget: (key: string, lines?: string[]) => (widgets[key] = lines), notify: (msg: string) => notices.push(msg), onTerminalInput: (h: any) => ((esc = h), () => (esc = undefined)) };
 	const branch: any[] = [];
 	let queued = false;
 	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => branch }, hasPendingMessages: () => queued };
@@ -184,7 +185,7 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	handlers.before_agent_start({}, ctx);
 	assert.equal(statuses.review, undefined);
 
-	// A message queued while the verdict is extracted stops the extraction, and the next settle reviews the same changes,
+	// Esc with a message queued while the verdict is extracted stops the extraction, and the next settle reviews the same changes,
 	// with the review budget intact (three stops, then a fourth review).
 	let extracting = false;
 	(ctx as any).modelRegistry.complete = (_model: any, _context: any, options: any) => {
@@ -200,6 +201,7 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 		await until(() => extracting);
 		const t = Date.now();
 		queued = true;
+		assert.deepEqual(esc!("\x1b"), { consume: true });
 		assert.equal(await p, undefined);
 		assert.ok(Date.now() - t < 5000, "the settle returns promptly");
 		queued = false;
@@ -211,7 +213,7 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	assert.equal(notices.at(-1), "review: ok");
 });
 
-test("a queued message skips or aborts the review, and the next settle reviews those changes", async () => {
+test("a queued message waits for the running review; Esc skips the review and the next settle reviews those changes", async () => {
 	const savedArgv1 = process.argv[1];
 	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "review-gate-agent-"));
 	const repo = mkdtempSync(join(tmpdir(), "review-gate-repo-"));
@@ -242,7 +244,8 @@ test("a queued message skips or aborts the review, and the next settle reviews t
 	const notices: string[] = [];
 	const statuses: Record<string, string | undefined> = {};
 	const widgets: Record<string, string[] | undefined> = {};
-	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), setWidget: (key: string, lines?: string[]) => (widgets[key] = lines), notify: (msg: string) => notices.push(msg) };
+	let esc: ((data: string) => any) | undefined;
+	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), setWidget: (key: string, lines?: string[]) => (widgets[key] = lines), notify: (msg: string) => notices.push(msg), onTerminalInput: (h: any) => ((esc = h), () => (esc = undefined)) };
 	let pending = false;
 	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => [] }, hasPendingMessages: () => pending };
 	const settle = () => handlers.agent_before_settle({ entries: [], outcome: "completed", context: { llmMessages: [] } }, ctx);
@@ -257,32 +260,63 @@ test("a queued message skips or aborts the review, and the next settle reviews t
 		pending = false;
 		assert.equal(await settle(), undefined, "no further change, still reviewed");
 		assert.equal(reviewCount(), 1);
+		assert.equal(logged.length, 1);
 		assert.deepEqual(notices, ["review: fine"]);
 
-		// A message queued while the reviewer runs stops it.
+		// (a) A message queued while the reviewer runs waits for it; the widget offers Esc.
 		writeFileSync(join(repo, "a.txt"), "3\n");
 		writeFileSync(slow, "");
-		const p = settle();
+		let done = false;
+		const a = settle().finally(() => (done = true));
 		await until(() => reviewCount() === 2);
 		pending = true;
-		assert.equal(await p, undefined);
-		assert.equal(reviewCount(), 2);
-		assert.deepEqual(notices, ["review: fine"]);
+		await until(() => /Esc: skip the review and run the queued message/.test(widgets.review?.[0] ?? ""));
+		assert.equal(done, false, "the review keeps running");
 		assert.equal(logged.length, 1);
+		assert.equal(notices.length, 1);
+		rmSync(slow);
+		assert.equal(await a, undefined);
+		assert.deepEqual(notices, ["review: fine", "review: fine"]);
+		assert.equal(logged.length, 2);
+		pending = false;
+
+		// (b) Esc with a message queued stops the review and is swallowed, so pi delivers the message.
+		writeFileSync(join(repo, "a.txt"), "4\n");
+		writeFileSync(slow, "");
+		const b = settle();
+		await until(() => reviewCount() === 3);
+		pending = true;
+		let t = Date.now();
+		assert.deepEqual(esc!("\x1b"), { consume: true });
+		assert.equal(await b, undefined);
+		assert.ok(Date.now() - t < 5000, "the settle returns promptly");
+		assert.equal(logged.length, 2);
+		assert.equal(notices.length, 2);
 		assert.equal(statuses.review, undefined);
 		assert.equal(widgets.review, undefined);
+		assert.equal(esc, undefined, "the listener is gone");
 
+		// (c) Esc with nothing queued stops the review too, and pi's own Esc runs; the rollback reviews the same changes.
 		pending = false;
+		const c = settle();
+		await until(() => reviewCount() === 4);
+		t = Date.now();
+		assert.equal(esc!("\x1b"), undefined);
+		assert.equal(await c, undefined);
+		assert.ok(Date.now() - t < 5000, "the settle returns promptly");
+		assert.equal(logged.length, 2);
+		assert.equal(notices.length, 2);
+
+		// The stopped reviews were not counted: this is the prompt's third, and a further change hits the cap.
 		rmSync(slow);
 		assert.equal(await settle(), undefined);
-		assert.equal(reviewCount(), 3);
+		assert.equal(reviewCount(), 5);
 		assert.equal(notices.at(-1), "review: fine");
-
-		// The stopped review was not counted: this is the prompt's third.
-		writeFileSync(join(repo, "a.txt"), "4\n");
+		assert.equal(logged.length, 3);
+		writeFileSync(join(repo, "a.txt"), "5\n");
 		assert.equal(await settle(), undefined);
-		assert.equal(reviewCount(), 4);
-		assert.equal(notices.at(-1), "review: fine");
+		assert.match(notices.at(-1)!, /used its 3 reviews/);
+		assert.equal(reviewCount(), 5);
 	} finally {
 		rmSync(slow, { force: true });
 		process.argv[1] = savedArgv1!;
@@ -345,7 +379,8 @@ test("before the review, the harness runs the checks of steps the prompt ticked,
 	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: () => {} } as any);
 	const notices: string[] = [];
 	const widgets: string[] = [];
-	const ui = { theme: { fg: (_c: string, t: string) => t }, setStatus: () => {}, setWidget: (_k: string, lines?: string[]) => lines && widgets.push(...lines), notify: (msg: string) => notices.push(msg) };
+	let esc: ((data: string) => any) | undefined;
+	const ui = { theme: { fg: (_c: string, t: string) => t }, setStatus: () => {}, setWidget: (_k: string, lines?: string[]) => lines && widgets.push(...lines), notify: (msg: string) => notices.push(msg), onTerminalInput: (h: any) => ((esc = h), () => (esc = undefined)) };
 	let activeFile = "docs/plans/p.md";
 	let pending = false;
 	const ctx = { mode: "tui", cwd: repo, ui, sessionManager: { getBranch: () => [{ type: "custom", customType: "handoff-plan", data: { path: activeFile } }] }, hasPendingMessages: () => pending };
@@ -461,7 +496,7 @@ test("before the review, the harness runs the checks of steps the prompt ticked,
 		assert.deepEqual(calls, ["r-2", "r-crit"]);
 		assert.equal(reviewCount(), reviewed + 1);
 
-		// A failing round at F, then passing checks at P whose review a queued message stops: back at F, the failure still holds.
+		// A failing round at F, then passing checks at P whose review Esc stops: back at F, the failure still holds.
 		rPlan("x", " ");
 		handlers.before_agent_start({}, ctx); // r.md: steps 1 and 2 ticked
 		outcomes["r-3"] = { out: "r-3 failed", code: 1 };
@@ -475,6 +510,7 @@ test("before the review, the harness runs the checks of steps the prompt ticked,
 		const p = settle();
 		await until(() => reviewCount() === reviewed + 2);
 		pending = true;
+		esc!("\x1b");
 		assert.equal(await p, undefined);
 		pending = false;
 		rmSync(slow);

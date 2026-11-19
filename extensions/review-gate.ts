@@ -19,11 +19,12 @@ import { gated, parsePlan, runCheck } from "./checks.ts";
 import { activePlan, steps } from "./handoff.ts";
 import { discoverAgents } from "./subagent/agents.ts";
 import { getResultOutput, isFailedResult, runSingleAgent } from "./subagent/run.ts";
+import { matchesKey } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const MAX_REVIEWS = 3;
 const MAX_CHECK_ROUNDS = 3;
-// ponytail: Esc cannot stop a review, since pi hands this boundary no abort signal; the timeout bounds the wait.
+// ponytail: Esc stops a review; the timeout only bounds a reviewer that hangs.
 const REVIEW_TIMEOUT_MS = 10 * 60_000;
 // The reviewer's view of the session: enough recent messages that a short "go ahead" has its context,
 // and the run's tool calls, capped so a long run cannot crowd out the diff.
@@ -190,7 +191,7 @@ export default function (pi: ExtensionAPI) {
 			if (checksFailing) ctx.ui.notify("review gate: plan checks still fail and nothing changed since; unreviewed", "warning");
 			return;
 		}
-		// A check round or review cut short by a queued message puts this back, so the next settle still runs them.
+		// A check round cut short by a queued message, or a review stopped by Esc, puts this back, so the next settle still runs them.
 		const prev = { seen, seenTicks, checksFailing };
 		const rollBack = () => ({ seen, seenTicks, checksFailing } = prev);
 		seen = now;
@@ -261,21 +262,34 @@ export default function (pi: ExtensionAPI) {
 		// pi clears its working loader at agent_end, before this hook, so a widget is what shows the wait.
 		// The elapsed time shows the review is still going: it takes minutes while pi looks idle.
 		const reviewStart = Date.now();
-		const showReview = (s: number) =>
-			ctx.ui.setWidget("review", [ctx.ui.theme.fg("accent", `GPT reviewing the changes…${s ? ` ${s >= 60 ? `${Math.floor(s / 60)}m` : ""}${s % 60}s` : ""}`)]);
 		let shown = 0;
+		let shownQueued = false;
+		const showReview = (s: number) => {
+			const queued = ctx.hasPendingMessages();
+			const hint = queued ? " · Esc: skip the review and run the queued message" : "";
+			ctx.ui.setWidget("review", [ctx.ui.theme.fg("accent", `GPT reviewing the changes…${s ? ` ${s >= 60 ? `${Math.floor(s / 60)}m` : ""}${s % 60}s` : ""}${hint}`)]);
+			shown = s;
+			shownQueued = queued;
+		};
 		showReview(0);
 		let output = "";
 		let failure = "";
 		let result: Awaited<ReturnType<typeof runSingleAgent>> | undefined;
 		let v: Verdict | undefined;
-		// A queued message stops the review and its verdict extraction; a stale ctx throws, which stops it too.
+		// Esc stops the review and its verdict extraction; a stale ctx throws, which stops it too.
 		const pending = new AbortController();
+		// With a message queued, the listener swallows Esc, since pi's own would move the message back into the editor
+		// and abort the session; pi then delivers it. With none, pi's Esc runs too and pi does not continue.
+		const unsubscribe = ctx.ui.onTerminalInput((data) => {
+			if (!matchesKey(data, "escape")) return undefined;
+			pending.abort();
+			return ctx.hasPendingMessages() ? { consume: true } : undefined;
+		});
 		const poll = setInterval(() => {
 			try {
-				if (ctx.hasPendingMessages()) pending.abort();
 				const s = Math.floor((Date.now() - reviewStart) / 1000);
-				if (s !== shown && !pending.signal.aborted) showReview((shown = s));
+				const queued = ctx.hasPendingMessages();
+				if ((s !== shown || queued !== shownQueued) && !pending.signal.aborted) showReview(s);
 			} catch {
 				pending.abort();
 			}
@@ -290,6 +304,7 @@ export default function (pi: ExtensionAPI) {
 			failure = err instanceof Error ? err.message : String(err); // the timeout lands here
 		} finally {
 			clearInterval(poll);
+			unsubscribe();
 			ctx.ui.setStatus("review", undefined);
 			ctx.ui.setWidget("review", undefined);
 		}
