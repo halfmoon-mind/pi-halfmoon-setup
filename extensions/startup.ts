@@ -3,8 +3,7 @@
  * commands; and at startup, a warning names each tool or login the package needs that this machine
  * lacks, with how to fix it, and suggests hideThinkingBlock until the user sets it either way; and
  * folded thinking draws no `Thinking...` line. A
- * machine with everything set up sees no warning. laya-serve is not
- * checked here: router.ts already says when it cannot start.
+ * machine with everything set up sees no warning.
  */
 
 import { existsSync } from "node:fs";

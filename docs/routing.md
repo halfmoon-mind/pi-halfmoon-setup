@@ -16,47 +16,26 @@ The main session never runs on GPT. Opus is the default; a `quick` question runs
 
 A Claude `-*` setting picks the newest numbered version of that family in the registered model catalog. Dated snapshots are excluded, so the actual model version depends on pi's catalog.
 
-The classifier reads up to 16,000 characters of the first user message. When the chosen answer's probability is below `0.5` or the classifier is unreachable, the router uses `complex`. It also uses that tier while Laya is switched off with `/laya off`. This is a **fallback for failed classification**; it does not switch to another provider when the chosen model fails to authenticate or respond.
+Claude Haiku classifies through `claude -p` with the same login as pi-claude-cli, so it counts against your subscription limits. It takes about 4 s (p50 3.8 s) and reads up to 16,000 characters of the user message. A missing `claude`, an error, a 30 s timeout, or an answer outside the schema makes the router use `complex`. This is a **fallback for failed classification**; it does not switch to another provider when the chosen model fails to authenticate or respond.
 
-The same classification also scores how hard the request is from 0 to 3, and the session runs at `low`, `medium`, `high`, or `xhigh` thinking to match; `xhigh` starts at 2.15, since Laya rarely scores above 2.5. A Fable session (`deep` or `complex-high`) runs at `medium` instead, so `xhigh` only reaches a `standard` session. pi's level goes to the `claude` CLI's `--effort` level of the same name for every Claude model. If you pick a thinking level yourself in pi, yours is used for the rest of the session. When the classifier cannot answer, or Laya is off, your level is used from the start.
+The same classification picks the thinking level, `low`, `medium`, `high`, or `xhigh`, and the session runs at it. A Fable session (`deep` or `complex-high`) runs at `medium` instead, so `xhigh` only reaches a `standard` session. pi's level goes to the `claude` CLI's `--effort` level of the same name for every Claude model. If you pick a thinking level yourself in pi, yours is used for the rest of the session. When the classifier cannot answer, your level is used from the start.
 
-## Classifier settings
+## Classifier
 
-The default is local Laya. The router points pi's TypeSafe Jev client at the local server, so in both modes the classifier may show up as `typesafe/jev-latest`.
-
-| Env var | Default | Description |
-|---|---|---|
-| `PI_ROUTER_CLASSIFIER` | `laya` | Local `laya` or TypeSafe `jev` |
-| `LAYA_URL` | `http://127.0.0.1:8000/v1` | Laya server URL. The process is managed automatically only when the host is `127.0.0.1` or `localhost` |
-| `LAYA_SERVE_BIN` | `laya-serve` | Executable of the server to start automatically |
-| `LAYA_MODELS` | `english` | Model setting passed to the Laya server it starts |
-| `TYPESAFE_API_KEY` | none | API key for `jev` mode |
-
-To use TypeSafe Jev, set these before starting pi.
+The router runs:
 
 ```bash
-export PI_ROUTER_CLASSIFIER=jev
-export TYPESAFE_API_KEY="<your-api-key>"
-pi --model router/auto
+claude -p --model haiku --output-format json --json-schema <SCHEMA> --no-session-persistence --tools "" --setting-sources= --strict-mcp-config --disable-slash-commands --system-prompt <SYSTEM>
 ```
 
-## Laya lifecycle and status
+and reads the tier and effort from `.structured_output`. The prompt goes on stdin, because `--tools ""` would take a positional argument after it as its own value. There is no `--bare`: it turns off OAuth and the keychain, so a subscription login could not answer. `--setting-sources=` keeps your hooks and CLAUDE.md away from Haiku.
 
-- Starts the local server ahead of time when a `router/auto` session starts or the model is selected.
-- Stops a server it started once it has gone 5 minutes unused after classifying, and starts it again when needed.
-- Cleans up the server when pi exits or reloads, and a separate lifeline process stops it even if pi exits abnormally.
-- Waits up to 30 seconds for startup. The measurements recorded in the code are about 10 s for a cold start and about 2.5 GB of memory; they vary by environment.
+There are no settings. To skip routing, pick a model with `/model`.
 
-| pi command | Action |
-|---|---|
-| `/laya` | Show the current state |
-| `/laya on` | Enable classification and retry starting the server |
-| `/laya off` | Disable classification and stop local Laya |
-
-By default the switch is saved in `~/.pi/agent/laya.json` and applies to every pi instance that uses the same config directory. Setting `PI_CODING_AGENT_DIR` moves it too. A session that is already routed keeps its tier, so check changed classification behavior in a new session.
-
-The footer shows `laya starting`, `laya on`, `laya idle`, `laya unavailable`, or `laya off`. `/laya off` can also stop a `laya-serve` on that local port that another pi started or that you started by hand.
+On 30 held-out hand-labelled prompts, Haiku got 28 right against 18 for the previous local classifier, and sent 0 of 20 real work requests to `quick` against its 6 of 20. Haiku's p50 latency was 3.8 s.
 
 ## Dataset log
 
-Each newly routed session appends one JSON line to `~/.pi/agent/laya-dataset.jsonl` (it follows `PI_CODING_AGENT_DIR`): the prompt Laya saw (up to 16,000 characters), every tier's probability, the raw effort score, and the tier, model, and thinking level used. Sessions routed while Laya is off are logged without answers. `session` matches the pi session file, whose `thinking_level_change` and `model_change` entries show where you overrode the route. The file holds prompt text, so treat it like your session files.
+Each newly routed session appends one JSON line to `~/.pi/agent/laya-dataset.jsonl` (it follows `PI_CODING_AGENT_DIR`): the prompt Haiku saw (up to 16,000 characters), `classifier`, and the tier, effort, model, and thinking level used, with no probabilities or score. `session` matches the pi session file, whose `thinking_level_change` and `model_change` entries show where you overrode the route. The file holds prompt text, so treat it like your session files.
+
+The file keeps the name `laya-dataset.jsonl` from the earlier local classifier (Laya), removed together with `/laya`, `laya.json`, `PI_ROUTER_CLASSIFIER` and the `LAYA_*` variables; lines written since carry `"classifier": "haiku"` and no `probabilities` or `score`.

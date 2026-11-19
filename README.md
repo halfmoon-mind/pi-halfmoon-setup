@@ -22,7 +22,7 @@ Use the same model router, subagents, and workflow prompts on every machine. `ro
 - **Claude CLI provider** — uses your logged-in `claude` CLI as a pi model provider.
 - **PDF reading** — `read` sends each PDF page's text, plus an image of only the pages with figures or no text.
 - **Office file reading** — `read` sends Word, Excel and PowerPoint files as text with tracked changes, comments, formulas, chart data and speaker notes, plus an image of only the slides that need one.
-- **Optional local classifier** — starts and stops Laya automatically, and falls back to Opus when it cannot classify.
+- **Haiku classifier** — Claude Haiku picks each session's tier and thinking through your `claude` login, and falls back to Opus when it cannot.
 - **Sandbox** — bash runs in an OS sandbox that writes only in the project and temp dirs, reaches only allowed hosts, and cannot read the listed credential paths; pi's file tools follow the same paths, and a few risky actions ask first.
 
 ## Quick start
@@ -49,29 +49,13 @@ The `reviewer`, `plan-reviewer`, and `deep-worker` agents and the review gate us
 export OPENAI_API_KEY="<your-api-key>"
 ```
 
-### 2. Install Laya (optional)
-
-For automatic classification, install the Laya server.
-
-```bash
-pip install "laya[serve]"
-```
-
-If `laya-serve` is not on your PATH, for example because it lives in a virtualenv, point to the executable. Replace the path below with your install location.
-
-```bash
-export LAYA_SERVE_BIN="$HOME/projects/laya/.venv/bin/laya-serve"
-```
-
-Without Laya, the router uses Opus from the `complex` tier. If you plan to run without classification, run `/laya off` in pi.
-
-### 3. Run
+### 2. Run
 
 ```bash
 pi --model router/auto
 ```
 
-You can also pick `router/auto` with `/model` while pi is running. If you use Laya, check its state with `/laya`.
+You can also pick `router/auto` with `/model` while pi is running.
 
 At startup, pi warns about anything this package needs that the machine lacks (the `claude` CLI or its login, `openai` credentials, poppler, pandoc, LibreOffice), and a line above the editor lists the workflow commands until the first prompt. To hide pi's list of loaded skills and extensions, set `"quietStartup": "header"` in `~/.pi/agent/settings.json` on each machine. To keep thinking blocks folded until you press `Ctrl+T`, set `"hideThinkingBlock": true` there too; the tool calls already show where the work is heading. Until that key is set, startup warns about it; set it to `false` to keep thinking shown and drop the warning. A folded thinking block draws nothing, not even pi's `Thinking...` line. Collapsed, a bash call shows the model-written description when there is one, and otherwise its command's first line without a leading `cd` into the session's directory; `Ctrl+O` shows the command as written. Set `"steeringMode": "all"` and `"followUpMode": "all"` there as well, so pi delivers every queued message of a kind together when that queue is next read instead of one per turn: steers reach the next turn, and follow-ups still wait until the agent would stop; a running pi keeps the old values until it restarts.
 
@@ -105,7 +89,7 @@ See [docs/workflow.md](docs/workflow.md) for the details.
 
 ## Model selection
 
-`router/auto` classifies the first user message into a tier (`quick`, `standard`, `complex`, `deep`, or `complex-high`), runs the session on Sonnet, Opus, or Fable to match, and sets thinking from how hard the request is. When classification fails, or Laya is off, it uses `complex` on Opus. See [docs/routing.md](docs/routing.md) for the tier table, the classifier settings, Laya's lifecycle and status, and the dataset log.
+`router/auto` classifies the first user message into a tier (`quick`, `standard`, `complex`, `deep`, or `complex-high`), runs the session on Sonnet, Opus, or Fable to match, and sets thinking from how hard the request is. When classification fails, it uses `complex` on Opus. See [docs/routing.md](docs/routing.md) for the tier table, the classifier, and the dataset log.
 
 ### Agents
 
@@ -134,8 +118,7 @@ bash runs in an OS sandbox that writes only in the project and temp dirs, reache
 
 | Symptom | What to check |
 |---|---|
-| `laya unavailable` or a server start warning | Check the `laya[serve]` install and the `LAYA_SERVE_BIN` path, then run `/laya on` |
-| You want to keep working without Laya | Run `/laya off`. New sessions route to Opus |
+| Every new session warns `classifier unavailable` | Check that `claude` is on your PATH and `claude auth login` is done |
 | The `pi-claude-cli` provider fails to load | Check that `claude` is on your PATH and that `claude auth login` is done |
 | `is not in the model catalog` | Check that the chosen provider is loaded and check pi's model catalog |
 | Auth errors in `deep-worker`, a review step, or the review gate | Check the `openai` provider's authentication and your access to the model |
@@ -154,7 +137,6 @@ prompts/                    Workflow templates for slash commands
 extensions/
   router.ts                 router/auto: classification, tiers and routing
   router.test.ts            Router tests
-  laya.ts                   Starts and stops laya-serve for the router, and /laya
   sandbox/                  OS sandbox for bash, and the same path checks for pi's file tools
   footer.ts                 Two-line footer with the routed tier and model
   review-gate.ts            Stop-time review of each prompt's changes
@@ -180,7 +162,7 @@ Run from the repository root with Node.js 22.18 or later and pi installed.
 npm test
 ```
 
-The tests cover the router's classification, fallback, model selection, and process lifetime; the subagent tool's agent loading and chain runs; the review gate's change detection, verdicts, and plan checks; the handoff's session signals, its stay-or-leave decision and new session, and keeping plan files out of git; which PDF pages `read` sends with an image, and its page ranges; how it sends Word tracked changes, Excel cells and formulas, and PowerPoint chart data, notes and pictures; and the Claude CLI provider's system prompt handoff, tool calls, and CLI error handling. pi's packages load from the installed pi (`~/.pi/agent/install`), and fake processes stand in for `pi` and `claude`. Real provider authentication and full workflow runs need to be checked separately.
+The tests cover the router's classification, fallback, model selection, and the Haiku call's arguments and failures; the subagent tool's agent loading and chain runs; the review gate's change detection, verdicts, and plan checks; the handoff's session signals, its stay-or-leave decision and new session, and keeping plan files out of git; which PDF pages `read` sends with an image, and its page ranges; how it sends Word tracked changes, Excel cells and formulas, and PowerPoint chart data, notes and pictures; and the Claude CLI provider's system prompt handoff, tool calls, and CLI error handling. pi's packages load from the installed pi (`~/.pi/agent/install`), and fake processes stand in for `pi` and `claude`. Real provider authentication and full workflow runs need to be checked separately.
 
 GitHub Actions runs the same tests on every push and PR, and weekly against the newest pi from npm, so a pi update that breaks this package shows up right away.
 

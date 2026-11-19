@@ -22,7 +22,7 @@
 - **Claude CLI 연동** — 로그인된 `claude` CLI를 pi의 모델 프로바이더로 사용합니다.
 - **PDF 읽기** — `read`가 PDF 각 페이지의 텍스트를 보내고, 그림이 있거나 텍스트가 없는 페이지만 이미지로 함께 보냅니다.
 - **Office 파일 읽기** — `read`가 Word·Excel·PowerPoint 파일을 변경 추적, 댓글, 수식, 차트 숫자, 발표자 노트가 담긴 텍스트로 보내고, 이미지가 필요한 슬라이드만 이미지로 함께 보냅니다.
-- **선택적인 로컬 분류기** — Laya를 자동 시작·종료하고, 분류할 수 없으면 Opus로 진행합니다.
+- **Haiku 분류기** — Claude Haiku가 사용자의 `claude` 로그인으로 세션마다 티어와 thinking을 고르고, 답하지 못하면 Opus로 진행합니다.
 - **샌드박스** — bash는 OS 샌드박스 안에서 실행되어 프로젝트와 임시 디렉터리에만 쓰고, 허용된 호스트에만 접속하며, 목록에 있는 자격 증명 경로는 읽지 못합니다. pi의 파일 도구도 같은 경로 규칙을 따르고, 위험한 몇 가지 동작은 먼저 확인을 받습니다.
 
 ## 빠른 시작
@@ -49,29 +49,13 @@ pi install ~/projects/pi-halfmoon-setup
 export OPENAI_API_KEY="<your-api-key>"
 ```
 
-### 2. Laya 설치 (선택)
-
-자동 분류를 사용하려면 Laya 서버를 설치합니다.
-
-```bash
-pip install "laya[serve]"
-```
-
-가상환경 등에 설치해 `laya-serve`가 PATH에 없다면 실행 파일 경로를 지정합니다. 아래 경로는 자신의 설치 위치로 바꾸세요.
-
-```bash
-export LAYA_SERVE_BIN="$HOME/projects/laya/.venv/bin/laya-serve"
-```
-
-Laya가 없어도 라우터는 `complex` 티어의 Opus를 사용합니다. 분류 없이 사용할 계획이라면 pi 안에서 `/laya off`를 실행하면 됩니다.
-
-### 3. 실행
+### 2. 실행
 
 ```bash
 pi --model router/auto
 ```
 
-실행 중에는 `/model`로 `router/auto`를 선택할 수도 있습니다. Laya를 사용하는 경우 `/laya`로 상태를 확인합니다.
+실행 중에는 `/model`로 `router/auto`를 선택할 수도 있습니다.
 
 시작할 때 이 패키지에 필요한데 이 머신에 없는 것(`claude` CLI나 그 로그인, `openai` 인증, poppler, pandoc, LibreOffice)을 경고하고, 첫 프롬프트 전까지 입력창 위에 워크플로 명령어를 한 줄로 보여 줍니다. pi가 로드한 스킬·확장 목록을 숨기려면 머신마다 `~/.pi/agent/settings.json`에 `"quietStartup": "header"`를 설정하세요. thinking 블록을 `Ctrl+T`를 누를 때만 펼치려면 같은 파일에 `"hideThinkingBlock": true`도 넣으세요. 작업 방향은 tool 호출만 봐도 알 수 있습니다. 이 키를 설정하기 전까지는 시작할 때 경고가 뜹니다. thinking을 계속 보면서 경고만 끄려면 `false`로 설정하세요. 접힌 thinking 블록은 pi의 `Thinking...` 줄조차 그리지 않습니다. 접힌 bash 호출은 모델이 작성한 설명이 있으면 그 설명을, 없으면 명령의 첫 줄을 보여 주되, 세션 디렉터리로 들어가는 맨 앞의 `cd`는 뺍니다. `Ctrl+O`를 누르면 명령이 작성된 그대로 보입니다. 같은 파일에 `"steeringMode": "all"`과 `"followUpMode": "all"`도 넣으면, pi가 큐에 쌓인 같은 종류의 메시지를 턴마다 하나씩이 아니라 그 큐를 다음에 읽을 때 한꺼번에 전달합니다. steer는 다음 턴에 들어가고, follow-up은 여전히 에이전트가 멈추려 할 때까지 기다립니다. 실행 중인 pi는 다시 시작할 때까지 이전 값을 씁니다.
 
@@ -105,7 +89,7 @@ pi 입력창에서 프롬프트 명령어 뒤에 작업을 적습니다.
 
 ## 모델 선택
 
-`router/auto`는 첫 사용자 메시지를 `quick`(Sonnet), `standard`·`complex`(Opus), `deep`·`complex-high`(Fable) 티어 중 하나로 분류하고, 같은 분류에서 세션의 thinking 레벨도 정합니다. 분류할 수 없거나 `/laya off` 상태이면 `complex` 티어의 Opus를 사용합니다. 티어 표와 함께 분류기 설정, Laya 수명과 상태, 데이터셋 로그는 [라우팅](docs/routing.ko.md)에 있습니다.
+`router/auto`는 첫 사용자 메시지를 `quick`(Sonnet), `standard`·`complex`(Opus), `deep`·`complex-high`(Fable) 티어 중 하나로 분류하고, 같은 분류에서 세션의 thinking 레벨도 정합니다. 분류할 수 없으면 `complex` 티어의 Opus를 사용합니다. 티어 표와 함께 분류기, 데이터셋 로그는 [라우팅](docs/routing.ko.md)에 있습니다.
 
 ### 에이전트
 
@@ -134,8 +118,7 @@ bash는 OS 샌드박스 안에서 실행되어 프로젝트와 임시 디렉터�
 
 | 증상 | 확인할 사항 |
 |---|---|
-| `laya unavailable` 또는 서버 시작 경고 | `laya[serve]` 설치와 `LAYA_SERVE_BIN` 경로를 확인한 뒤 `/laya on` 실행 |
-| Laya 없이 계속 사용하고 싶음 | `/laya off` 실행. 새 세션은 Opus로 라우팅 |
+| 새 세션마다 `classifier unavailable` 경고 | `claude`가 PATH에 있는지, `claude auth login`이 완료됐는지 확인 |
 | `pi-claude-cli` 프로바이더 로드 실패 | `claude`가 PATH에 있는지, `claude auth login`이 완료됐는지 확인 |
 | `is not in the model catalog` | 선택된 프로바이더의 로드 여부와 pi 모델 카탈로그 확인 |
 | `deep-worker`, 리뷰 단계, 리뷰 게이트의 인증 오류 | `openai` 프로바이더 인증 및 해당 모델 접근 권한 확인 |
@@ -153,7 +136,6 @@ agents/                     역할별 프롬프트와 모델 설정
 prompts/                    슬래시 명령어용 워크플로 템플릿
 extensions/
   router.ts                 router/auto 분류, 티어와 라우팅
-  laya.ts                   라우터용 laya-serve 시작·종료와 /laya
   router.test.ts            라우터 테스트
   sandbox/                  bash용 OS 샌드박스와 pi 파일 도구에 쓰는 같은 경로 검사
   footer.ts                 라우팅된 tier와 모델을 보여 주는 2줄 하단 표시줄
@@ -180,7 +162,7 @@ Node.js 22.18 이상과 pi가 설치된 환경에서 저장소 루트를 기준�
 npm test
 ```
 
-라우터의 분류·폴백·모델 선택·프로세스 수명, 서브에이전트의 에이전트 로드와 chain 실행, 리뷰 게이트의 변경 감지·판정·계획 대조, handoff의 세션 신호·유지/이동 판단·새 세션 생성·계획 파일 git 제외, `read`가 이미지를 붙이는 PDF 페이지와 페이지 범위, Word 변경 추적·Excel 셀과 수식·PowerPoint 차트 숫자와 노트와 그림을 보내는 방식, Claude CLI 프로바이더의 시스템 프롬프트 전달·도구 호출·CLI 오류 처리를 검증합니다. pi 패키지는 설치된 pi(`~/.pi/agent/install`)에서 불러오고, `pi`와 `claude` 실행은 가짜 프로세스로 대체합니다. 실제 모델 프로바이더 인증과 전체 워크플로 실행은 별도로 확인해야 합니다.
+라우터의 분류·폴백·모델 선택·Haiku 호출 인자와 실패 처리, 서브에이전트의 에이전트 로드와 chain 실행, 리뷰 게이트의 변경 감지·판정·계획 대조, handoff의 세션 신호·유지/이동 판단·새 세션 생성·계획 파일 git 제외, `read`가 이미지를 붙이는 PDF 페이지와 페이지 범위, Word 변경 추적·Excel 셀과 수식·PowerPoint 차트 숫자와 노트와 그림을 보내는 방식, Claude CLI 프로바이더의 시스템 프롬프트 전달·도구 호출·CLI 오류 처리를 검증합니다. pi 패키지는 설치된 pi(`~/.pi/agent/install`)에서 불러오고, `pi`와 `claude` 실행은 가짜 프로세스로 대체합니다. 실제 모델 프로바이더 인증과 전체 워크플로 실행은 별도로 확인해야 합니다.
 
 GitHub Actions는 push·PR마다, 그리고 매주 npm의 최신 pi를 설치해 같은 테스트를 실행합니다. 그래서 pi 업데이트로 이 패키지가 깨지면 바로 드러납니다.
 

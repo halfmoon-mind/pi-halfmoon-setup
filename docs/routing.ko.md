@@ -16,47 +16,26 @@
 
 Claude의 `-*` 설정은 등록된 모델 카탈로그에서 해당 계열의 최신 숫자 버전을 선택합니다. 날짜가 붙은 스냅샷은 제외하므로, 실제 모델 버전은 pi의 카탈로그에 따라 달라집니다.
 
-분류기는 첫 사용자 메시지의 최대 16,000자를 사용합니다. 선택된 답의 확률이 `0.5` 미만이거나 분류기에 접근할 수 없으면 `complex`를 사용합니다. `/laya off` 상태에서도 같은 티어를 사용합니다. 이는 **분류 실패에 대한 폴백**이며, 선택된 모델의 인증·호출 실패 시 다른 프로바이더로 전환하는 기능은 아닙니다.
+Claude Haiku가 pi-claude-cli와 같은 로그인으로 `claude -p`를 통해 분류하므로 구독 한도에서 차감됩니다. 분류에는 약 4초(p50 3.8초)가 걸리며, 사용자 메시지의 최대 16,000자를 사용합니다. `claude`가 없거나, 오류가 나거나, 30초 안에 답하지 않거나, 스키마 밖의 답을 주면 `complex`를 사용합니다. 이는 **분류 실패에 대한 폴백**이며, 선택된 모델의 인증·호출 실패 시 다른 프로바이더로 전환하는 기능은 아닙니다.
 
-같은 분류에서 요청의 난이도도 0~3점으로 함께 매겨, 세션의 thinking level을 `low`, `medium`, `high`, `xhigh` 중 하나로 정합니다. Laya가 2.5를 넘는 점수를 거의 주지 않아 `xhigh`는 2.15점부터입니다. Fable 세션(`deep`, `complex-high`)은 대신 `medium`으로 돌기 때문에, `xhigh`는 `standard` 세션에만 적용됩니다. pi의 레벨은 모든 Claude 모델에서 `claude` CLI의 같은 이름 `--effort` 레벨로 전달됩니다. pi에서 thinking level을 직접 바꾸면 그 세션의 나머지 동안은 사용자가 고른 값을 씁니다. 분류기가 답하지 못하거나 Laya가 꺼져 있으면 처음부터 사용자가 정한 값을 씁니다.
+같은 분류에서 thinking level도 `low`, `medium`, `high`, `xhigh` 중 하나로 직접 골라 세션에 적용합니다. Fable 세션(`deep`, `complex-high`)은 대신 `medium`으로 돌기 때문에, `xhigh`는 `standard` 세션에만 적용됩니다. pi의 레벨은 모든 Claude 모델에서 `claude` CLI의 같은 이름 `--effort` 레벨로 전달됩니다. pi에서 thinking level을 직접 바꾸면 그 세션의 나머지 동안은 사용자가 고른 값을 씁니다. 분류기가 답하지 못하면 처음부터 사용자가 정한 값을 씁니다.
 
-## 분류기 설정
+## 분류기
 
-기본값은 로컬 Laya입니다. pi의 TypeSafe Jev 클라이언트를 로컬 서버에 연결하므로 두 모드 모두 분류기 식별자가 `typesafe/jev-latest`로 표시될 수 있습니다.
-
-| 환경변수 | 기본값 | 설명 |
-|---|---|---|
-| `PI_ROUTER_CLASSIFIER` | `laya` | 로컬 `laya` 또는 TypeSafe `jev` |
-| `LAYA_URL` | `http://127.0.0.1:8000/v1` | Laya 서버 주소. 호스트가 `127.0.0.1` 또는 `localhost`일 때만 프로세스를 자동 관리 |
-| `LAYA_SERVE_BIN` | `laya-serve` | 자동 실행할 서버의 실행 파일 경로 |
-| `LAYA_MODELS` | `english` | 자동 시작하는 Laya 서버에 전달할 모델 설정 |
-| `TYPESAFE_API_KEY` | 없음 | `jev` 모드에서 사용할 API 키 |
-
-TypeSafe Jev를 사용하려면 pi를 시작하기 전에 설정합니다.
+라우터는 다음 명령을 실행하고 `.structured_output`에서 티어와 effort를 읽습니다.
 
 ```bash
-export PI_ROUTER_CLASSIFIER=jev
-export TYPESAFE_API_KEY="<your-api-key>"
-pi --model router/auto
+claude -p --model haiku --output-format json --json-schema <SCHEMA> --no-session-persistence --tools "" --setting-sources= --strict-mcp-config --disable-slash-commands --system-prompt <SYSTEM>
 ```
 
-## Laya 수명과 상태
+`--tools ""`는 뒤에 오는 위치 인자를 자신의 값으로 가져가므로, 프롬프트는 stdin으로 전달합니다. `--bare`는 쓰지 않습니다. OAuth와 키체인을 끄기 때문에 구독 로그인으로는 답할 수 없게 됩니다. `--setting-sources=`로 사용자의 hook과 CLAUDE.md가 Haiku에 전달되지 않게 합니다.
 
-- `router/auto` 세션 시작 또는 모델 선택 시 로컬 서버를 미리 시작합니다.
-- 분류 이후 5분 동안 사용하지 않으면 자신이 시작한 서버를 종료하고, 필요할 때 다시 시작합니다.
-- pi 종료·리로드 시 서버를 정리하며, 별도 lifeline 프로세스가 비정상 종료 시에도 서버를 종료하도록 구성되어 있습니다.
-- 시작 대기 제한은 30초입니다. 코드에 기록된 측정치는 콜드 스타트 약 10초, 메모리 약 2.5GB이며 환경에 따라 달라집니다.
+설정은 없습니다. 라우팅을 건너뛰려면 `/model`로 모델을 직접 고르세요.
 
-| pi 명령어 | 동작 |
-|---|---|
-| `/laya` | 현재 상태 표시 |
-| `/laya on` | 분류 활성화 및 서버 시작 재시도 |
-| `/laya off` | 분류 비활성화 및 로컬 Laya 종료 |
-
-스위치는 기본적으로 `~/.pi/agent/laya.json`에 저장되어 같은 설정 디렉터리를 사용하는 pi 인스턴스에 적용됩니다. `PI_CODING_AGENT_DIR`을 설정하면 저장 위치도 달라집니다. 이미 라우팅된 세션은 선택한 티어를 유지하므로 변경된 분류 동작은 새 세션에서 확인하세요.
-
-푸터에는 `laya starting`, `laya on`, `laya idle`, `laya unavailable`, `laya off` 상태가 표시됩니다. `/laya off`는 해당 로컬 포트에서 실행 중인 다른 pi 또는 수동 실행의 `laya-serve`도 종료할 수 있습니다.
+직접 라벨링한 30개의 검증용 프롬프트에서 Haiku는 28개, 이전 로컬 분류기는 18개를 맞혔습니다. 실제 작업 요청 20개 중 `quick`으로 보낸 것은 Haiku 0개, 이전 분류기 6개였습니다. Haiku의 p50 지연은 3.8초였습니다.
 
 ## 데이터셋 로그
 
-새로 라우팅된 세션마다 `~/.pi/agent/laya-dataset.jsonl`에 JSON 한 줄이 추가됩니다(`PI_CODING_AGENT_DIR`을 따름). Laya가 본 프롬프트(최대 16,000자), 티어별 확률, 난이도 원점수, 실제 사용한 티어·모델·thinking 레벨이 기록됩니다. Laya가 꺼진 상태로 라우팅된 세션은 답 없이 기록됩니다. `session`은 pi 세션 파일과 같은 값이며, 그 파일의 `thinking_level_change`, `model_change` 항목으로 사용자가 라우팅을 바꾼 지점을 알 수 있습니다. 프롬프트 원문이 담기므로 세션 파일처럼 다루세요.
+새로 라우팅된 세션마다 `~/.pi/agent/laya-dataset.jsonl`에 JSON 한 줄이 추가됩니다(`PI_CODING_AGENT_DIR`을 따름). Haiku가 본 프롬프트(최대 16,000자), `classifier`, 실제 사용한 티어·effort·모델·thinking 레벨이 기록되며, 확률이나 점수는 없습니다. `session`은 pi 세션 파일과 같은 값이며, 그 파일의 `thinking_level_change`, `model_change` 항목으로 사용자가 라우팅을 바꾼 지점을 알 수 있습니다. 프롬프트 원문이 담기므로 세션 파일처럼 다루세요.
+
+파일 이름 `laya-dataset.jsonl`은 이전 로컬 분류기(Laya)에서 이어진 것으로, Laya는 `/laya`, `laya.json`, `PI_ROUTER_CLASSIFIER`, `LAYA_*` 변수와 함께 제거되었습니다. 이후 기록된 줄에는 `"classifier": "haiku"`가 있고 `probabilities`나 `score`는 없습니다.

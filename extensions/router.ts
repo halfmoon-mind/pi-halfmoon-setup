@@ -5,29 +5,20 @@
  * until one needs more than Sonnet.
  * The same classification sets the thinking level, until the user picks another one in pi.
  *
- * Classifier backend (swap with one env var, no code change):
- *   PI_ROUTER_CLASSIFIER=laya (default)  local laya-serve, which speaks Jev's System One protocol
- *   PI_ROUTER_CLASSIFIER=jev             TypeSafe Jev (needs TYPESAFE_API_KEY)
- *   LAYA_URL                             laya-serve base URL (default http://127.0.0.1:8000/v1)
- *   LAYA_SERVE_BIN                       laya-serve executable pi starts (default `laya-serve` on PATH)
- *
- * Laya reuses pi's built-in TypeSafe System One client by pointing the `typesafe` provider at
- * laya-serve, so the footer and /session show the classifier as typesafe/jev-latest either way.
- *
- * When the classifier is unavailable, the session falls back to FALLBACK_TIER and says so once.
+ * The classifier is Claude Haiku through the logged-in `claude` CLI, so it draws on subscription limits
+ * and takes about 4 s. When it cannot answer, the session uses FALLBACK_TIER and says so once.
  */
 
+import { execFile } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
 import { PLAN_FIRST } from "./handoff.ts";
-import { createLaya } from "./laya.ts";
 
-export { spawnWithLifeline } from "./laya.ts";
-
-// Tier -> physical model. Opus is the default; deep work, and complex work Laya rates xhigh, run on Fable
+// Tier -> physical model. Opus is the default; deep work, and complex work the classifier rates xhigh, run on Fable
 // at medium thinking; questions that change no code run on Sonnet at medium. GPT stays in subagents
 // (deep-worker, reviewers).
 // Claude goes through pi-claude-cli (the logged-in `claude` CLI) so it draws on subscription limits, not extra usage.
@@ -36,47 +27,39 @@ export { spawnWithLifeline } from "./laya.ts";
 const TIERS = {
 	// Not sticky: a Q&A opener often turns into work, so each new user message is classified again until
 	// another tier wins. Moving to Opus costs one cache miss, which a short Q&A history makes cheap.
-	quick: { provider: "pi-claude-cli", id: "claude-sonnet-*", criteria: "A question, explanation, or greeting that asks for no code change", thinking: "medium" },
-	standard: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Ordinary features, fixes, reviews, or docs" },
-	complex: { provider: "pi-claude-cli", id: "claude-opus-*", criteria: "Subtle design, cross-cutting refactors, or hard debugging", xhigh: "complex-high" },
-	deep: { provider: "pi-claude-cli", id: "claude-fable-*", criteria: "Logic-heavy algorithms, backend internals, or math with a clear goal", thinking: "medium" },
-	// Not offered to Laya: reached only through complex's `xhigh`, and run at medium thinking.
+	quick: { provider: "pi-claude-cli", id: "claude-sonnet-*", thinking: "medium" },
+	standard: { provider: "pi-claude-cli", id: "claude-opus-*" },
+	complex: { provider: "pi-claude-cli", id: "claude-opus-*", xhigh: "complex-high" },
+	deep: { provider: "pi-claude-cli", id: "claude-fable-*", thinking: "medium" },
+	// Not offered to the classifier: reached only through complex's `xhigh`, and run at medium thinking.
 	"complex-high": { provider: "pi-claude-cli", id: "claude-fable-*", thinking: "medium" },
 } as const;
 type Tier = keyof typeof TIERS;
 const FALLBACK_TIER: Tier = "complex";
 
-// Laya scores the opening request 0-3 against these levels; the last level whose `from` the score
-// reaches picks the thinking level. Its scores bunch below 2.5 (hardest seen: 2.43), so xhigh starts at
-// 2.15, the best cut on 24 labelled prompts (19 right, against 15 with plain rounding).
-// ponytail: cut fitted to a small sample, and short how-to questions still rate high (seen: 1.61);
-// refit from logged scores if xhigh escalates too often. xhigh itself only reaches a standard session,
-// since deep and complex-high run on Fable at medium.
-const EFFORTS = [
-	{ level: "low", from: 0, criteria: "Trivial: a typo, a rename, a one-line change, or explaining a command or concept" },
-	{ level: "medium", from: 0.5, criteria: "Routine: an ordinary feature, fix, test, or review with a clear path" },
-	{ level: "high", from: 1.5, criteria: "Hard: careful reasoning across several steps, files, or design tradeoffs" },
-	{ level: "xhigh", from: 2.15, criteria: "Very hard: subtle concurrency or correctness bugs, novel algorithms, or high-stakes design" },
-] as const;
-
-// Laya's per-request state limit is 50k chars; the opening request is what decides the tier.
 const MAX_PROMPT_CHARS = 16_000;
-// ponytail: fixed threshold; below it the answer is a near-tie (seen: 0.363 vs 0.359), so take
-// FALLBACK_TIER rather than risk routing hard work down. Tune from logged probabilities if needed.
-const MIN_PROBABILITY = 0.5;
+const CLASSIFIER_TIERS = ["quick", "standard", "complex", "deep"] as const; // complex-high is reached only through complex's xhigh
+const EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+// ponytail: fixed timeout, about 8x Haiku's p50 of 3.8 s; past it the session takes FALLBACK_TIER instead of waiting.
+const CLASSIFY_TIMEOUT_MS = 30_000;
+// Validated on 30 held-out hand-labelled prompts (28/30); change it only against the dataset log.
+const SYSTEM = `You route a coding agent's user request to a model. Answer with the tier and thinking effort.
+Tiers:
+- quick: a greeting, or a question answerable from general knowledge or the conversation alone, with no need to read code, logs, or files, run commands, or change anything.
+- standard: ordinary features, fixes, reviews, or docs; also short follow-ups that tell the agent to carry out or continue work ("진행해", "수정해봐", "1번 진행해봐").
+- complex: subtle design, cross-cutting refactors, hard debugging, or investigating why something is wrong, missing, or not behaving as specified.
+- deep: logic-heavy algorithms, backend internals, or math with a clear goal.
+Effort: low = trivial; medium = routine; high = several steps, files, or tradeoffs; xhigh = subtle correctness, novel algorithms, high-stakes design.
+Requests are often in Korean. Questions that ask the agent to check, inspect, or find a cause ("체크해봐", "왜 안나와?", "원인 파악") are investigations, not quick.`;
+const SCHEMA = JSON.stringify({ type: "object", properties: { tier: { enum: CLASSIFIER_TIERS }, effort: { enum: EFFORTS } }, required: ["tier", "effort"] });
 
 interface RouterState {
 	tier: Tier;
 	// The classifier could not answer, so `tier` is FALLBACK_TIER by default rather than by choice.
 	unclassified?: true;
-	// Laya's probability for its top choice; below MIN_PROBABILITY, `tier` is FALLBACK_TIER instead.
-	probability?: number;
-	// Thinking level Laya chose, and the user's level at the time; picking another level in pi drops it.
+	// Thinking level the classifier chose, and the user's level at the time; picking another level in pi drops it.
 	effort?: ModelRouteRequest["thinkingLevel"];
 	userLevel?: ModelRouteRequest["thinkingLevel"];
-	// Laya's raw answers, for the dataset log: every tier's probability and the 0-3 effort score.
-	probabilities?: Record<string, number>;
-	score?: number;
 }
 
 // The latest user message: the first one for a new session, the new one when a quick session reclassifies.
@@ -88,51 +71,34 @@ function latestUserText(messages: readonly Message[]): string {
 	return texts.findLast((t) => t !== PLAN_FIRST) ?? "";
 }
 
-async function classifyRequest(request: ModelRouteRequest<RouterState>, ctx: ExtensionContext): Promise<RouterState | undefined> {
-	const classifier = ctx.modelRegistry.findOfType("classifier", "typesafe", "jev-latest");
-	if (!classifier) return undefined;
+async function classifyRequest(request: ModelRouteRequest<RouterState>): Promise<RouterState | undefined> {
 	try {
-		const result = await ctx.modelRegistry.classify(
-			classifier,
-			{
-				state: { prompt: latestUserText(request.messages).slice(0, MAX_PROMPT_CHARS) },
-				questions: {
-					tier: {
-						type: "choice",
-						instructions: "Which kind of software engineering work does `prompt` request?",
-						criteria: Object.fromEntries(Object.entries(TIERS).flatMap(([tier, t]) => ("criteria" in t ? [[tier, t.criteria]] : []))),
-					},
-					effort: {
-						type: "score",
-						instructions: "How much reasoning does the software engineering request in `prompt` need?",
-						criteria: EFFORTS.map((e) => e.criteria),
-					},
-				},
-			},
-			{ signal: request.signal },
-		);
-		const answer = result.stopReason === "stop" ? result.answers.tier : undefined;
-		if (answer?.type !== "choice" || !(answer.choice in TIERS)) return undefined;
-		const probability = answer.probabilities[answer.choice] ?? 0;
-		const chosen = probability >= MIN_PROBABILITY ? (answer.choice as Tier) : FALLBACK_TIER;
-		const score = result.answers.effort;
-		const effort = score?.type === "score" ? EFFORTS.findLast((e) => score.score >= e.from)?.level : undefined;
-		const t = TIERS[chosen];
-		const tier = effort === "xhigh" && "xhigh" in t ? t.xhigh : chosen;
+		// The prompt goes on stdin: `--tools ""` would take a positional after it as its value. Bare mode
+		// stays off: it skips OAuth and the keychain, so a subscription login could not answer.
+		// SIGKILL on timeout and abort alike: a CLI that ignores SIGTERM would outlive both.
+		const run = promisify(execFile)("claude", ["-p", "--model", "haiku", "--output-format", "json", "--json-schema", SCHEMA, "--no-session-persistence", "--tools", "", "--setting-sources=", "--strict-mcp-config", "--disable-slash-commands", "--system-prompt", SYSTEM], { timeout: CLASSIFY_TIMEOUT_MS, killSignal: "SIGKILL" });
+		// Not execFile's `signal` option: it aborts with SIGTERM whatever killSignal says (Node 22).
+		const abort = () => run.child.kill("SIGKILL");
+		request.signal?.addEventListener("abort", abort, { once: true });
+		if (request.signal?.aborted) abort();
+		// Without claude the write fails with EPIPE; `run` already rejects with ENOENT, so the stream error is dropped.
+		run.child.stdin?.on("error", () => {});
+		run.child.stdin?.end(latestUserText(request.messages).slice(0, MAX_PROMPT_CHARS));
+		const result = JSON.parse((await run).stdout);
+		const answer = result.is_error ? undefined : result.structured_output;
+		if (!CLASSIFIER_TIERS.includes(answer?.tier) || !EFFORTS.includes(answer?.effort)) return undefined;
+		const t = TIERS[answer.tier as Tier];
+		const tier: Tier = answer.effort === "xhigh" && "xhigh" in t ? t.xhigh : answer.tier;
 		const routed = TIERS[tier];
-		const raw = { probability, probabilities: answer.probabilities, score: score?.type === "score" ? score.score : undefined };
-		return effort ? { tier, ...raw, effort: "thinking" in routed ? routed.thinking : effort, userLevel: request.thinkingLevel } : { tier, ...raw };
+		return { tier, effort: "thinking" in routed ? routed.thinking : answer.effort, userLevel: request.thinkingLevel };
 	} catch {
 		return undefined;
 	}
 }
 
-// "deep 82%"; a `?` marks a tier taken by default, after a near-tie or without an answer.
+// A `?` marks a tier taken by default, without an answer.
 function tierLabel(state: RouterState): string {
-	if (state.unclassified) return `${state.tier}?`;
-	if (state.probability === undefined) return state.tier;
-	const mark = state.probability < MIN_PROBABILITY ? "?" : "";
-	return `${state.tier}${mark} ${Math.round(state.probability * 100)}%`;
+	return state.unclassified ? `${state.tier}?` : state.tier;
 }
 
 // `<family>-*` resolves to the newest `<family>-<major>[-<minor>]` the provider lists, skipping dated
@@ -152,14 +118,11 @@ function resolveModel(ctx: ExtensionContext, provider: string, id: string): Mode
 
 export default function (pi: ExtensionAPI) {
 	const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-	// One JSONL line per routed session, to refit Laya's cuts or train it later. It also covers subagents,
-	// which run without a session file; `session` joins pi's session file otherwise, whose
-	// thinking_level_change and model_change entries show where the user overrode the route.
+	// One JSONL line per routed session, to check the classifier against what the user did. It also covers
+	// subagents, which run without a session file; `session` joins pi's session file otherwise, whose
+	// thinking_level_change and model_change entries show where the user overrode the route. The earlier
+	// classifier's cuts are gone; the file keeps its name for continuity.
 	const datasetPath = join(agentDir, "laya-dataset.jsonl");
-	const laya = createLaya(pi, agentDir, {
-		tier: FALLBACK_TIER,
-		model: (ctx) => resolveModel(ctx, TIERS[FALLBACK_TIER].provider, TIERS[FALLBACK_TIER].id),
-	});
 
 	pi.registerVirtualModel<RouterState>({
 		provider: "router",
@@ -178,30 +141,26 @@ export default function (pi: ExtensionAPI) {
 			const fresh = !prior || (prior.tier === "quick" && request.reason === "user");
 			let state = fresh ? undefined : prior;
 			if (!state) {
-				// Switched off with /laya off: no classification, and no warning since it is deliberate.
-				const off = laya.off();
-				if (laya.managed && !off) await laya.ensure(request.signal);
-				if (!off && ctx.hasUI) ctx.ui.setStatus("router", "classifying…");
-				const classified = off ? { tier: FALLBACK_TIER } : await classifyRequest(request, ctx);
+				if (ctx.hasUI) ctx.ui.setStatus("router", "classifying…");
+				const classified = await classifyRequest(request);
 				// Throwing ends this request without storing a tier, so a cancelled classification is retried next time.
 				if (request.signal?.aborted) {
 					if (ctx.hasUI) ctx.ui.setStatus("router", undefined);
 					request.signal.throwIfAborted();
 				}
-				if (laya.managed && !off) laya.touch();
-				// A missing laya-serve was already explained once; do not repeat it every session.
-				if (!classified && ctx.hasUI && !laya.cannotStart()) {
+				// A failed session lands on FALLBACK_TIER, which is never classified again, so this warns once per session.
+				if (!classified && ctx.hasUI) {
 					ctx.ui.notify(`router/auto: classifier unavailable, using ${FALLBACK_TIER}`, "warning");
 				}
 				state = classified ?? { tier: FALLBACK_TIER, unclassified: true };
-				// A thinking level the user picked earlier in this quick session still wins over Laya's new one.
+				// A thinking level the user picked earlier in this quick session still wins over the classifier's new one.
 				if (prior && (!prior.effort || request.thinkingLevel !== prior.userLevel)) {
 					const { effort: _effort, userLevel: _userLevel, ...rest } = state;
 					state = rest;
 				}
 			}
-			// The user picked another thinking level after Laya chose one; theirs wins for the rest of the session.
-			if (state.effort && request.thinkingLevel !== state.userLevel) state = { tier: state.tier, probability: state.probability };
+			// The user picked another thinking level after the classifier chose one; theirs wins for the rest of the session.
+			if (state.effort && request.thinkingLevel !== state.userLevel) state = { tier: state.tier };
 			// footer.ts shows this before the routed model.
 			if (ctx.hasUI) ctx.ui.setStatus("router", tierLabel(state));
 			const { provider, id } = TIERS[state.tier];
@@ -209,7 +168,7 @@ export default function (pi: ExtensionAPI) {
 			if (!model) throw new Error(`router/auto: ${provider}/${id} is not in the model catalog`);
 			if (fresh) {
 				const prompt = latestUserText(request.messages).slice(0, MAX_PROMPT_CHARS);
-				const record = { time: new Date().toISOString(), session: ctx.sessionManager.getSessionId(), mode: ctx.mode, prompt, ...state, model: `${model.provider}/${model.id}`, thinkingLevel: state.effort ?? request.thinkingLevel };
+				const record = { time: new Date().toISOString(), session: ctx.sessionManager.getSessionId(), mode: ctx.mode, classifier: "haiku", prompt, ...state, model: `${model.provider}/${model.id}`, thinkingLevel: state.effort ?? request.thinkingLevel };
 				try {
 					appendFileSync(datasetPath, `${JSON.stringify(record)}\n`);
 				} catch {
@@ -217,7 +176,7 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 			// Returning the same state object keeps it; a new object is stored on the first request and
-			// when the user overrides Laya's thinking level.
+			// when the user overrides the classifier's thinking level.
 			return { model, thinkingLevel: state.effort ?? request.thinkingLevel, state };
 		},
 	});

@@ -1,8 +1,8 @@
 /**
  * A two-line footer in place of pi's built-in one:
  *
- *   ~/projects/app (main*) • session name                claude 5h 3% · 7d 64% · laya starting
- *   CH89% $1.234 ━━──────── 14%/200k (auto)         complex 82% → claude-opus-5-5 • medium
+ *   ~/projects/app (main*) • session name                   claude 5h 3% · 7d 64% · review off
+ *   CH89% $1.234 ━━──────── 14%/200k (auto)                 complex → claude-opus-5-5 • medium
  *
  * Extension statuses go on the right of the first line, except router.ts's "router" status (the
  * session's tier), which leads the model it routed to. Under a virtual model the thinking level is

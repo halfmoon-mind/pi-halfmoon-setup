@@ -20,7 +20,7 @@
     <text x="72" y="313" fill="#A8BBD0" font-size="16">router/auto</text>
     <rect x="326" y="240" width="236" height="106" rx="14" fill="#203C42" stroke="#65CDB0"/>
     <text x="350" y="277" fill="#C0F7E6" font-size="21" font-weight="700">Classify once</text>
-    <text x="350" y="305" fill="#B1CFCB" font-size="16">Laya / TypeSafe Jev</text>
+    <text x="350" y="305" fill="#B1CFCB" font-size="16">Claude Haiku</text>
     <text x="350" y="328" fill="#B1CFCB" font-size="14">Fallback → Opus</text>
     <rect x="666" y="197" width="486" height="54" rx="12" fill="#20334B" stroke="#3A516C"/>
     <rect x="666" y="266" width="486" height="54" rx="12" fill="#20334B" stroke="#3A516C"/>

@@ -53,10 +53,10 @@ test("under router/auto: tier leads the routed model, its thinking level once, a
 		{ type: "custom", customType: "review-gate", data: { usage: { cost: 0.125 } } },
 		assistant("pi-claude-cli", "claude-opus-5-5", usage(1000, 3000, 2)),
 		assistant("pi-claude-cli", "claude-opus-5-5", usage(9000, 0, 1), { stopReason: "aborted" }),
-	], { router: "complex 82%", laya: "laya starting", claude: "claude 5h 3% · 7d 64%" });
+	], { router: "complex", review: "review off", claude: "claude 5h 3% · 7d 64%" });
 	assert.deepEqual([...lines], [
-		"~/projects/app (main) • fix login | claude 5h 3% · 7d 64% · laya starting",
-		"CH75% $3.875 ━━━━━━━━── 80%/100k (auto) | complex 82% → claude-opus-5-5 • medium",
+		"~/projects/app (main) • fix login | claude 5h 3% · 7d 64% · review off",
+		"CH75% $3.875 ━━━━━━━━── 80%/100k (auto) | complex → claude-opus-5-5 • medium",
 	]);
 });
 
