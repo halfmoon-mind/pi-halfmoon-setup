@@ -12,6 +12,8 @@
  * Uses JSON mode to capture structured output from subagents.
  */
 
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -31,17 +33,29 @@ import {
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
-const PER_TASK_OUTPUT_CAP = 50 * 1024;
+const PARALLEL_OUTPUT_BUDGET = 50 * 1024;
 
-function truncateParallelOutput(output: string): string {
+// Splits the budget smallest output first, so a task shorter than its share hands the rest to the larger ones.
+function parallelOutputCaps(sizes: number[]): number[] {
+	const caps = new Array<number>(sizes.length);
+	let remaining = PARALLEL_OUTPUT_BUDGET;
+	const order = sizes.map((_, i) => i).sort((a, b) => sizes[a]! - sizes[b]!);
+	for (const [n, i] of order.entries()) {
+		caps[i] = Math.min(sizes[i]!, Math.floor(remaining / (order.length - n)));
+		remaining -= caps[i]!;
+	}
+	return caps;
+}
+
+function truncateParallelOutput(output: string, cap: number, saveFull: () => string): string {
 	const byteLength = Buffer.byteLength(output, "utf8");
-	if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
+	if (byteLength <= cap) return output;
 
-	let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
-	while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
+	let truncated = output.slice(0, cap);
+	while (Buffer.byteLength(truncated, "utf8") > cap) {
 		truncated = truncated.slice(0, -1);
 	}
-	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted. Full output preserved in tool details.]`;
+	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted. Full output: ${saveFull()}]`;
 }
 
 async function mapWithConcurrencyLimit<TIn, TOut>(
@@ -295,8 +309,16 @@ export default function (pi: ExtensionAPI) {
 				});
 
 				const successCount = results.filter((r) => !isFailedResult(r)).length;
-				const summaries = results.map((r) => {
-					const output = truncateParallelOutput(getResultOutput(r));
+				const outputs = results.map(getResultOutput);
+				const caps = parallelOutputCaps(outputs.map((o) => Buffer.byteLength(o, "utf8")));
+				let dir: string | undefined;
+				const summaries = results.map((r, index) => {
+					const output = truncateParallelOutput(outputs[index]!, caps[index]!, () => {
+						dir ??= mkdtempSync(path.join(tmpdir(), "pi-subagent-output-"));
+						const file = path.join(dir, `${index}-${r.agent.replace(/[^\w.-]/g, "_")}.md`);
+						writeFileSync(file, outputs[index]!);
+						return file;
+					});
 					const status = isFailedResult(r)
 						? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
 						: "completed";

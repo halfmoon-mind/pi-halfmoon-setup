@@ -75,6 +75,39 @@ test("a chain runs each agent on its own model and hands the previous step's out
 	assert.equal(result.content[0].text, "answer to Task: plan from answer to Task: find the router");
 });
 
+test("parallel output shares a 50 KB budget; a cut task's full output is in a file the notice names", async () => {
+	freshAgentDir();
+	const dir = mkdtempSync(join(tmpdir(), "fake-pi-"));
+	process.argv[1] = join(dir, "pi.mjs");
+	const answer = (task: string) => (task === "Task: t0" ? "short answer" : "answer to " + task + "x".repeat(20_000) + "END");
+	writeFileSync(
+		process.argv[1],
+		`const task = process.argv.at(-1);
+		const text = task === "Task: t0" ? "short answer" : "answer to " + task + "x".repeat(20_000) + "END";
+		const message = { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" };
+		console.log(JSON.stringify({ type: "message_end", message }));`,
+	);
+	let tool: any;
+	subagent({ registerTool: (def: any) => (tool = def) } as any);
+	const tasks = Array.from({ length: 8 }, (_, i) => ({ agent: "scout", task: `t${i}` }));
+	const ctx = { cwd: dir, model: undefined, hasUI: false };
+	const text: string = (await tool.execute("call-1", { tasks }, undefined, undefined, ctx)).content[0].text;
+
+	assert.ok(Buffer.byteLength(text) <= 50 * 1024 + 8 * 300, `${Buffer.byteLength(text)} bytes`);
+	assert.doesNotMatch(text, /preserved in tool details/);
+	const sections = text.split("\n\n---\n\n");
+	assert.equal(sections.length, 8);
+	assert.ok(sections[0]!.endsWith("\n\nshort answer"), sections[0]);
+	for (const [i, section] of sections.entries()) {
+		if (i === 0) continue;
+		const notice = section.match(/\[Output truncated: \d+ bytes omitted\. Full output: (\S+)\]/);
+		assert.ok(notice, `t${i} has no notice`);
+		assert.equal(readFileSync(notice[1]!, "utf8"), answer(`Task: t${i}`));
+		const kept = section.slice(section.indexOf("answer to"), section.indexOf("\n\n[Output truncated"));
+		assert.ok(Buffer.byteLength(kept) > Math.floor(51200 / 8), `t${i} kept ${Buffer.byteLength(kept)} bytes`);
+	}
+});
+
 test("collapsed, a subagent call shows which agents run, not their task text; ctrl+o shows it", () => {
 	let tool: any;
 	subagent({ registerTool: (def: any) => (tool = def) } as any);
