@@ -177,13 +177,55 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	completion = () => {
 		throw new Error("openai down");
 	};
+	// (b) A review with no verdict is retried once, and both attempts log a NONE entry.
 	writeFileSync(join(repo, "a.txt"), "11\n");
+	let runsBefore = reviewCount();
+	let loggedBefore = logged.length;
+	let noticesBefore = notices.length;
 	assert.equal(await settle(), undefined);
 	assert.match(notices.at(-1)!, /gave no verdict, so this turn went unreviewed \(first line: "The counter looks wrong\."\)/);
+	assert.equal(notices.length, noticesBefore + 1);
 	assert.equal(statuses.review, "unreviewed");
-	assert.equal(logged.at(-1).verdict, "NONE");
+	assert.equal(reviewCount(), runsBefore + 2);
+	assert.deepEqual(logged.slice(loggedBefore).map((entry) => entry.verdict), ["NONE", "NONE"]);
 	handlers.before_agent_start({}, ctx);
 	assert.equal(statuses.review, undefined);
+
+	// (a) Only the first attempt gets no verdict: the retry's verdict counts.
+	let calls = 0;
+	completion = () => {
+		if (calls++ === 0) throw new Error("openai down");
+		return { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "v", name: "verdict", arguments: { decision: "ALLOW", reason: "fine on retry" } }] };
+	};
+	writeFileSync(join(repo, "a.txt"), "13\n");
+	runsBefore = reviewCount();
+	loggedBefore = logged.length;
+	noticesBefore = notices.length;
+	assert.equal(await settle(), undefined);
+	assert.equal(notices.at(-1), "review: fine on retry");
+	assert.ok(!notices.slice(noticesBefore).some((n) => /unreviewed/.test(n)));
+	assert.equal(statuses.review, undefined);
+	assert.deepEqual(logged.slice(-2).map((entry) => entry.verdict), ["NONE", "ALLOW: fine on retry"]);
+	assert.equal(logged.length, loggedBefore + 2);
+	assert.equal(reviewCount(), runsBefore + 2);
+
+	// (c) A timeout is not retried. The reviewer is killed before it logs its task, so reviewCount() is not checked.
+	const realTimeout = AbortSignal.timeout;
+	let timeouts = 0;
+	AbortSignal.timeout = (ms: number) => (ms === 600_000 ? (timeouts++, AbortSignal.abort()) : realTimeout(ms));
+	try {
+		writeFileSync(join(repo, "a.txt"), "14\n");
+		loggedBefore = logged.length;
+		noticesBefore = notices.length;
+		assert.equal(await settle(), undefined);
+	} finally {
+		AbortSignal.timeout = realTimeout;
+	}
+	assert.equal(timeouts, 1);
+	assert.deepEqual(logged.slice(loggedBefore).map((entry) => entry.verdict), ["NONE"]);
+	assert.match(notices.at(-1)!, /the review failed: Subagent was aborted/);
+	assert.equal(notices.length, noticesBefore + 1);
+	handlers.before_agent_start({}, ctx);
 
 	// Esc with a message queued while the verdict is extracted stops the extraction, and the next settle reviews the same changes,
 	// with the review budget intact (three stops, then a fourth review).

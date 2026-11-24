@@ -264,10 +264,11 @@ export default function (pi: ExtensionAPI) {
 		const reviewStart = Date.now();
 		let shown = 0;
 		let shownQueued = false;
+		let retrying = false;
 		const showReview = (s: number) => {
 			const queued = ctx.hasPendingMessages();
 			const hint = queued ? " · Esc: skip the review and run the queued message" : "";
-			ctx.ui.setWidget("review", [ctx.ui.theme.fg("accent", `GPT reviewing the changes…${s ? ` ${s >= 60 ? `${Math.floor(s / 60)}m` : ""}${s % 60}s` : ""}${hint}`)]);
+			ctx.ui.setWidget("review", [ctx.ui.theme.fg("accent", `GPT reviewing the changes${retrying ? " again" : ""}…${s ? ` ${s >= 60 ? `${Math.floor(s / 60)}m` : ""}${s % 60}s` : ""}${hint}`)]);
 			shown = s;
 			shownQueued = queued;
 		};
@@ -295,13 +296,33 @@ export default function (pi: ExtensionAPI) {
 			}
 		}, 500);
 		try {
-			const agents = discoverAgents(ctx.cwd, "user").agents;
-			result = await runSingleAgent(ctx.cwd, {}, agents, "reviewer", task, undefined, undefined, AbortSignal.any([AbortSignal.timeout(REVIEW_TIMEOUT_MS), pending.signal]), undefined, (results) => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results }));
-			if (isFailedResult(result)) failure = `exit ${result.exitCode}, ${result.stopReason ?? "no stop reason"}: ${getResultOutput(result).trim()}`;
-			else output = getResultOutput(result).trim();
-			if (!pending.signal.aborted) v = parseVerdict(output) ?? (output ? await extract(ctx, output, pending.signal) : undefined);
-		} catch (err) {
-			failure = err instanceof Error ? err.message : String(err); // the timeout lands here
+			// A review with no verdict runs once more; Esc and the timeout are not retried.
+			for (let attempt = 1; ; attempt++) {
+				const timeout = AbortSignal.timeout(REVIEW_TIMEOUT_MS);
+				let timedOut = false;
+				try {
+					const agents = discoverAgents(ctx.cwd, "user").agents;
+					result = await runSingleAgent(ctx.cwd, {}, agents, "reviewer", task, undefined, undefined, AbortSignal.any([timeout, pending.signal]), undefined, (results) => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results }));
+					if (isFailedResult(result)) failure = `exit ${result.exitCode}, ${result.stopReason ?? "no stop reason"}: ${getResultOutput(result).trim()}`;
+					else output = getResultOutput(result).trim();
+					if (!pending.signal.aborted) v = parseVerdict(output) ?? (output ? await extract(ctx, output, pending.signal) : undefined);
+				} catch (err) {
+					failure = err instanceof Error ? err.message : String(err); // the timeout lands here
+					timedOut = timeout.aborted && !pending.signal.aborted;
+				}
+				if (v || pending.signal.aborted || timedOut || attempt === 2) break;
+				pi.appendEntry("review-gate", { model: result?.model, usage: result?.usage, verdict: "NONE" });
+				output = "";
+				failure = "";
+				result = undefined;
+				v = undefined;
+				retrying = true;
+				try {
+					showReview(Math.floor((Date.now() - reviewStart) / 1000));
+				} catch {
+					pending.abort(); // a stale ctx, as in the poll
+				}
+			}
 		} finally {
 			clearInterval(poll);
 			unsubscribe();
