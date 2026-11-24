@@ -31,6 +31,7 @@ function renderFooter(model: object, entries: object[], statuses: Record<string,
 		sessionManager: {
 			getCwd: () => cwd,
 			getSessionName: () => "fix login",
+			getSessionId: () => "01a0f648-fd8f-7125-bb7a-ee830683be8e",
 			getLeafId: () => "leaf",
 			getEntries: () => entries,
 			getBranch: () => entries,
@@ -55,7 +56,7 @@ test("under router/auto: tier leads the routed model, its thinking level once, a
 		assistant("pi-claude-cli", "claude-opus-5-5", usage(9000, 0, 1), { stopReason: "aborted" }),
 	], { router: "complex", review: "review off", claude: "claude 5h 3% · 7d 64%" });
 	assert.deepEqual([...lines], [
-		"~/projects/app (main) • fix login | claude 5h 3% · 7d 64% · review off",
+		"~/projects/app (main) • fix login • 01a0f648-fd8f | claude 5h 3% · 7d 64% · review off",
 		"CH75% $3.875 ━━━━━━━━── 80%/100k (auto) | complex → claude-opus-5-5 • medium",
 	]);
 });
@@ -70,7 +71,7 @@ test("uncommitted changes mark the branch", async () => {
 	execFileSync("git", ["init", "-q"], { cwd: repo });
 	writeFileSync(join(repo, "new.txt"), "");
 	const lines = renderFooter({ provider: "openai", id: "gpt-6.1-sol" }, [], {}, 120, { cwd: repo });
-	assert.match((await lines.rerendered())[0], /\(main\*\) • fix login$/);
+	assert.match((await lines.rerendered())[0], /\(main\*\) • fix login • 01a0f648-fd8f$/);
 });
 
 test("the ChatGPT subscription's usage, read with Codex CLI's login, shows once a prompt ends", async () => {

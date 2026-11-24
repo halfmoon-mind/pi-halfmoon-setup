@@ -188,6 +188,8 @@ function render(ctx: ExtensionContext, theme: Theme, footerData: ReadonlyFooterD
 	if (branch) where += ` (${branch}${dirty ? "*" : ""})`;
 	const name = ctx.sessionManager.getSessionName();
 	if (name) where += ` • ${name}`;
+	// `pi --session` takes an ID prefix; a UUIDv7's first 13 characters are its creation time to the millisecond.
+	where += ` • ${ctx.sessionManager.getSessionId().slice(0, 13)}`;
 
 	const statuses = footerData.getExtensionStatuses();
 	// Each colored on its own, so a status can color itself.
