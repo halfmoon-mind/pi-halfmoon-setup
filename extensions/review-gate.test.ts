@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { seam } from "./checks.ts";
-import reviewGate, { parseVerdict, runLog, snapshot } from "./review-gate.ts";
+import reviewGate, { parseVerdict, reviewNotes, reviewTask, runLog, snapshot } from "./review-gate.ts";
 
 // Waits, up to 30 s, until `ok()` holds.
 const until = async (ok: () => boolean) => {
@@ -92,6 +92,14 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	assert.match(readFileSync(log, "utf8"), /git diff [0-9a-f]{40}[\s\S]*Bumped a\.txt to 2\./);
 	const first = readFileSync(log, "utf8").split("\n---\n")[0];
 	assert.match(first, /contradicts what the user asked[\s\S]*Unverified: /);
+	assert.match(first, /leaving out something the user's latest message asks for[\s\S]*even when every test passes/);
+	assert.match(first, /## Requested[\s\S]*`file:line`[\s\S]*`missing`/);
+	assert.match(first, /Judge the inputs the request means[\s\S]*ordinary caller passes[\s\S]*"never throws"/);
+	assert.match(first, /Inputs specifically named by the request remain in scope even if unusual/);
+	assert.match(first, /hostile or exotic input[\s\S]*goes under Warnings, not Critical, unless the request specifically includes that input or is about untrusted input or security/);
+	assert.match(first, /For this review, bash may also run the project's existing test command after you inspect it[\s\S]*if safety is uncertain, skip execution[\s\S]*name the changes under Warnings/);
+	assert.match(first, /BLOCK for a bug names the concrete call or operation[\s\S]*`node -e`[\s\S]*If execution is unavailable or unsafe[\s\S]*completed run of that same call or operation does not reproduce is not a BLOCK/);
+	assert.match(first, /runtime-reproduction rule does not apply to omitted requested items[\s\S]*any missing requested item still means BLOCK/);
 	assert.match(first, /<user-messages-([0-9a-f]{8})>\nEarlier user message:\nset up a counter in a\.txt\n\nEarlier user message:\nHEAD x+\n\[cut 1033 characters\]\nx+ what should the counter be\?\n\nLatest user message:\n진행해\n<\/user-messages-\1>/);
 	assert.doesNotMatch(first, /x{1000}/, "a long message keeps only its two ends");
 	assert.match(first, /<tool-log-([0-9a-f]{8})>\nbash npm test \[ok\] → tests 3 pass 3\nedit a\.txt \[ERROR\] → Could not find the exact text\n<\/tool-log-\1>/);
@@ -101,9 +109,14 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 
 	assert.equal(await settle(), undefined, "the model changed nothing since the review");
 	writeFileSync(join(repo, "a.txt"), "3\n");
-	writeFileSync(verdict, "ALLOW: fixed");
-	assert.equal(await settle(), undefined);
+	writeFileSync(verdict, "ALLOW: fixed\nUnverified: none\n\n## Critical (must fix)\nNone\n\n## Warnings (should fix)\n- `a.txt:1` - no trailing newline check\n\n## Suggestions (consider)\n- None\n\n## Summary\nFine.");
+	const allowed = await settle();
+	assert.equal(allowed.continue, undefined, "an ALLOW's comments do not send the model back");
+	assert.deepEqual(allowed.entries.map((e: any) => [e.type, e.customType, e.display]), [["custom_message", "review-notes", true]]);
+	assert.match(allowed.entries[0].content, /allowed the changes \(fixed\)[\s\S]*## Warnings[\s\S]*no trailing newline/);
+	assert.doesNotMatch(allowed.entries[0].content, /Suggestions|Summary|Critical/);
 	assert.deepEqual(notices, ["review: fixed"]);
+	writeFileSync(verdict, "ALLOW: fine");
 	assert.equal(reviewCount(), 2);
 	assert.deepEqual(logged.map((entry) => [entry.customType, entry.verdict, typeof entry.usage.cost]), [["review-gate", "BLOCK: off by one", "number"], ["review-gate", "ALLOW: fixed", "number"]]);
 	assert.doesNotMatch(readFileSync(log, "utf8"), /follows the plan/);
@@ -278,6 +291,7 @@ test("a queued message waits for the running review; Esc skips the review and th
 	const dir = mkdtempSync(join(tmpdir(), "fake-pi-"));
 	const log = join(dir, "tasks.log");
 	const slow = join(dir, "slow");
+	const withNotes = join(dir, "notes");
 	process.argv[1] = join(dir, "pi.mjs");
 	writeFileSync(
 		process.argv[1],
@@ -285,13 +299,15 @@ test("a queued message waits for the running review; Esc skips the review and th
 		appendFileSync(${JSON.stringify(log)}, "task\\n---\\n");
 		const end = Date.now() + 120_000;
 		while (existsSync(${JSON.stringify(slow)}) && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
-		console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ALLOW: fine" }], stopReason: "stop" } }));`,
+		const text = "ALLOW: fine" + (existsSync(${JSON.stringify(withNotes)}) ? "\\n\\n## Suggestions\\n- a.txt:1 - name it" : "");
+		console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } }));`,
 	);
 	const reviewCount = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n---\n").length - 1 : 0);
 
 	const handlers: Record<string, any> = {};
 	const logged: any[] = [];
-	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: () => {} } as any);
+	const sent: any[] = [];
+	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: () => {}, sendMessage: (message: any, options: any) => sent.push([message, options]) } as any);
 	const notices: string[] = [];
 	const statuses: Record<string, string | undefined> = {};
 	const widgets: Record<string, string[] | undefined> = {};
@@ -317,6 +333,7 @@ test("a queued message waits for the running review; Esc skips the review and th
 		// (a) A message queued while the reviewer runs waits for it; the widget offers Esc.
 		writeFileSync(join(repo, "a.txt"), "3\n");
 		writeFileSync(slow, "");
+		writeFileSync(withNotes, "");
 		let done = false;
 		const a = settle().finally(() => (done = true));
 		await until(() => reviewCount() === 2);
@@ -326,7 +343,10 @@ test("a queued message waits for the running review; Esc skips the review and th
 		assert.equal(logged.length, 1);
 		assert.equal(notices.length, 1);
 		rmSync(slow);
-		assert.equal(await a, undefined);
+		assert.equal(await a, undefined, "no entry: one would end the context, and pi would answer the comments before the queued message");
+		assert.deepEqual(sent.map(([m, o]) => [m.customType, m.display, /## Suggestions[\s\S]*name it/.test(m.content), o]), [["review-notes", true, true, { deliverAs: "followUp" }]], "the comments follow the queued message");
+		assert.deepEqual((await modelCalls("followUp", sent)).map((c) => c.slice(-2).map((t) => t.slice(0, 30))), [["next", "The reviewer allowed the chang"]], "one model call, with the queued message and then the comments");
+		rmSync(withNotes);
 		assert.deepEqual(notices, ["review: fine", "review: fine"]);
 		assert.equal(logged.length, 2);
 		pending = false;
@@ -381,11 +401,51 @@ test("a queued message waits for the running review; Esc skips the review and th
 		assert.equal(await settle(), undefined);
 		assert.equal(reviewCount(), 6);
 		assert.equal(notices.at(-1), "review: fine");
+
+		// A message queued with Enter is a steer, which pi delivers first, so the comments join it there.
+		sent.length = 0;
+		writeFileSync(join(repo, "a.txt"), "8\n");
+		writeFileSync(slow, "");
+		writeFileSync(withNotes, "");
+		const steer = settle();
+		await until(() => reviewCount() === 7);
+		handlers.input({ type: "input", text: "next", source: "interactive", streamingBehavior: "steer" }, ctx);
+		pending = true;
+		rmSync(slow);
+		assert.equal(await steer, undefined);
+		assert.deepEqual(sent.map(([, o]) => o), [{ deliverAs: "steer" }]);
+		assert.deepEqual((await modelCalls("steer", sent)).map((c) => c.slice(-2).map((t) => t.slice(0, 30))), [["next", "The reviewer allowed the chang"]], "one model call, with the steer and then the comments");
+		assert.equal((await modelCalls("followUp", sent)).length, 2, "notes in the wrong queue would cost a call of their own");
+		pending = false;
+		rmSync(withNotes);
+		handlers.message_start({ message: { role: "user" } }, ctx);
 	} finally {
 		rmSync(slow, { force: true });
 		process.argv[1] = savedArgv1!;
 	}
 });
+
+// pi's real Agent after a run: a user message queued as `behavior` and whatever the gate sent, then pi's continue(); the model's contexts, one per call.
+async function modelCalls(behavior: "steer" | "followUp", sent: any[][]) {
+	const { Agent } = await import("@earendil-works/pi-agent-core");
+	const reply = (text: string): any => ({ role: "assistant", content: [{ type: "text", text }], api: "x", provider: "x", model: "x", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() });
+	const calls: string[][] = [];
+	const agent = new Agent({
+		initialState: { model: { id: "x", provider: "x", api: "x" } as any, messages: [{ role: "user", content: "fix it", timestamp: 1 }, reply("fixed")] },
+		steeringMode: "all",
+		followUpMode: "all",
+		convertToLlm: (ms: any[]) => ms.map((m) => (m.role === "custom" ? { role: "user", content: m.content, timestamp: m.timestamp } : m)),
+		streamFn: (async (_model: any, context: any) => {
+			calls.push(context.messages.map((m: any) => (typeof m.content === "string" ? m.content : m.content.map((c: any) => c.text).join(""))));
+			const message = reply("ok");
+			return { async *[Symbol.asyncIterator]() { yield { type: "done", reason: "stop", message }; }, result: async () => message };
+		}) as any,
+	} as any);
+	agent[behavior]({ role: "user", content: "next", timestamp: 2 });
+	for (const [m, o] of sent) agent[o.deliverAs as "steer" | "followUp"]({ role: "custom", ...m, timestamp: 3 } as any);
+	await agent.continue();
+	return calls;
+}
 
 test("parseVerdict reads the first non-empty line, tolerant of markdown and case", () => {
 	assert.deepEqual(parseVerdict("**BLOCK:** off by one\nmore"), { decision: "BLOCK", reason: "off by one" });
@@ -396,6 +456,34 @@ test("parseVerdict reads the first non-empty line, tolerant of markdown and case
 	assert.equal(parseVerdict("Verdict: BLOCK"), undefined);
 	assert.equal(parseVerdict(""), undefined);
 	assert.equal(parseVerdict("ALLOWED: x"), undefined);
+});
+
+test("reviewTask with the gate eval's input: one request, no tool log, the summary last; a plan adds both plan paragraphs", () => {
+	const o = { base: "abc", messages: [{ role: "user", content: "do X", timestamp: 0 }] as any, since: 0, summary: "Done. All tests pass." };
+	const plain = reviewTask(o);
+	assert.match(plain, /Latest user message:\ndo X/);
+	assert.doesNotMatch(plain, /tool-log-|follows the plan/);
+	assert.ok(plain.endsWith("Done. All tests pass."));
+	const planned = reviewTask({ ...o, plan: "docs/plans/p.md", requirements: true });
+	assert.match(planned, /follows the plan in docs\/plans\/p\.md/);
+	assert.match(planned, /`## Requirements` quote its `## Sources`/);
+});
+
+test("reviewTask reads the latest message whole up to 20,000 characters and cuts an earlier one past 2,000", () => {
+	const task = (...contents: string[]) => reviewTask({ base: "abc", messages: contents.map((content, i) => ({ role: "user", content, timestamp: i })) as any, since: 0, summary: "Done." });
+	const whole = task("y".repeat(15_000));
+	assert.ok(whole.includes("y".repeat(15_000)));
+	assert.doesNotMatch(whole, /\[cut/);
+	assert.match(task("y".repeat(25_000)), /\[cut 5000 characters\]/);
+	assert.match(task("e".repeat(3000), "latest"), /Earlier user message:\ne{1000}\n\[cut 1000 characters\]\ne{1000}\n\nLatest user message:\nlatest/);
+});
+
+test("reviewNotes keeps only Warnings and Suggestions that list something", () => {
+	const both = "ALLOW: ok\n\n## Critical (must fix)\n- `a.ts:1` - bad\n\n## Warnings (should fix)\n- `a.ts:2` - warn\n\n### Suggestions (consider)\n- `a.ts:3` - idea\n\n## Summary\nFine.";
+	assert.equal(reviewNotes(both), "## Warnings (should fix)\n- `a.ts:2` - warn\n\n### Suggestions (consider)\n- `a.ts:3` - idea");
+	for (const body of ["None", "- None.", "N/A", ""]) assert.equal(reviewNotes(`ALLOW: ok\n\n## Warnings\n${body}\n\n## Suggestions\n${body}\n\n## Summary\nFine.`), "", JSON.stringify(body));
+	assert.equal(reviewNotes("ALLOW: ok\nAll fine."), "");
+	assert.equal(reviewNotes("## Critical (must fix)\n- `a.ts:1` - bad"), "");
 });
 
 test("before the review, the harness runs the checks of steps the prompt ticked, then the success criteria, and a failure sends the model back", async () => {

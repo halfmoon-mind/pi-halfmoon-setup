@@ -11,6 +11,9 @@ tasks/<id>/repo/          the fixture: plain .mjs, src/ and test/*.test.mjs, no 
 tasks/<id>/hidden.test.mjs the grading test, copied into the repo root after the run
 tasks/<id>/plan.md        plan-kind tasks only: the prompt is the handoff kickoff for it
 tasks/<id>/solution/       the reference fix: src files overlaying repo/, checked by --dry, never copied into a run
+gate-eval.ts              the review gate's own eval, no implementer-agent run; writes gate-results/
+tasks/<id>/omit/<name>/   the solution with one stated rule dropped, overlaying solution/; used only by gate-eval.ts
+tasks/<id>/gate-plan.md   the gate eval's behavior-only plan, used instead of plan.md by gate-eval.ts
 ```
 
 ## Check the fixtures
@@ -47,3 +50,17 @@ Each run copies the fixture into a temp git repo (sessions go in a sibling dir, 
 It needs Node 22.19+, managed pi with this checkout installed (the bench measures what pi loads), a logged-in `claude`, and for the gate arm the review gate on (`/review-gate on`; the runner refuses while it is off). Real runs are manual and billed: each is one pi run on the model, a sonnet grade, and in the gate arm one or more GPT reviewer calls.
 
 `report.ts`: runs, pass rate, false-done rate, verdict compliance (reviews that gave a verdict), edit errors and plan-check rounds per run.
+
+## Gate eval
+
+Whether the review gate BLOCKs changes that leave out something the request asks for, without the noise of an implementer run. For each task with an `omit/` dir, it builds `full` (the reference solution) and each `omit/<name>` variant: `repo/` committed as the base in a fresh temp git repo, then `solution/` and the variant copied on top, uncommitted. The reviewer gets the text the gate itself sends, from `reviewTask` in `extensions/review-gate.ts`: `task.md` as the only user message, an empty tool log, and the fixed final message `Done. All tests pass.`. A task with a plan gets it untracked at `docs/plans/<id>.md` with every step ticked; `plan-lru-ttl` uses `gate-plan.md`, its `plan.md` without the test-writing sentences, since the solutions hold src files only and the original plan would make `full` incomplete too.
+
+```bash
+node --import ./extensions/test-hooks.ts bench/agent/gate-eval.ts --dry
+node --import ./extensions/test-hooks.ts bench/agent/gate-eval.ts --label <name> --repeat 3
+node --import ./extensions/test-hooks.ts bench/agent/gate-eval.ts --report [--label <name>]
+```
+
+`--dry` makes no model calls: per (task, variant), the visible tests pass, the plan lints clean, `full` passes the hidden test and each omission fails it. A real run writes `gate-results/<label>/<id>__<variant>__r<n>.json` with the decision (`NONE` when the review has no verdict line; there is no extraction fallback), reason, model, cost, duration, the review, the reviewer's attempted bash tool calls (`bash`) and whether the repository's snapshot changed during the review (`repoChanged`, by the gate's own `snapshot`; ignored untracked files are excluded, and an unchanged snapshot does not prove no writes occurred); a result already there is skipped, and a failed reviewer run writes nothing and keeps its temp dir. `--report` gives per label the recall (BLOCKs over omission runs, `NONE` counting as not BLOCK) and the false-block rate (BLOCKs over `full` runs), then BLOCKs per task and variant. A BLOCK for some other reason still counts in the report, so read the reasons.
+
+The reviewer is this checkout's `agents/reviewer.md`, unless `<agent dir>/agents/reviewer.md` overrides it, run through `pi` on PATH (put `~/.pi/agent/bin` first). Real runs are manual and billed: one reviewer invocation per (task, variant, repeat), so 12 × N, each up to 10 minutes and possibly several inference and tool turns.
