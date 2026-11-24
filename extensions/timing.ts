@@ -2,10 +2,12 @@
  * Times each prompt. While it runs, the footer status ticks every second with the total so far, the agent
  * time so far and the longest-running open tool; once it settles, one dim chat line gives the wall time,
  * the agent time (model + tools) and the top tools by time. Only interactive sessions are timed, so a
- * subagent's own pi and print/json mode show nothing.
+ * subagent's own pi and print/json mode show nothing. In every mode a bash command's duration is kept (see
+ * bash-times.ts), so the footer shows how long it usually takes and a run past twice that tells the model.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { commandKey, estimate, excluded, record, startBackfill } from "./bash-times.ts";
 
 type Tools = Map<string, { ms: number; n: number }>;
 
@@ -23,21 +25,26 @@ export function summary(r: { total: number; agent: number; tools: Tools; aborted
 	return `⏱ total ${fmt(r.total)} · agent ${fmt(r.agent)}${top.length ? ` · ${top.join(", ")}` : ""}${r.aborted ? " (aborted)" : ""}`;
 }
 
-/** The footer status while a prompt runs: `⏱ 42s · agent 30s · bash 12s`. */
-export function live(r: { total: number; agent: number; running?: { name: string; ms: number } }): string {
-	return `⏱ ${fmt(r.total)} · agent ${fmt(r.agent)}${r.running ? ` · ${r.running.name} ${fmt(r.running.ms)}` : ""}`;
+/** The footer status while a prompt runs: `⏱ 42s · agent 30s · bash 12s`, `bash 2m 10s of ~5m 16s` with a usual time. */
+export function live(r: { total: number; agent: number; running?: { name: string; ms: number; usual?: number } }): string {
+	const u = r.running?.usual;
+	const usual = u === undefined ? "" : r.running!.ms > 2 * u ? ` · usually ~${fmt(u)}` : ` of ~${fmt(u)}`;
+	return `⏱ ${fmt(r.total)} · agent ${fmt(r.agent)}${r.running ? ` · ${r.running.name} ${fmt(r.running.ms)}${usual}` : ""}`;
 }
 
-type Run = { start: number; agent: number; agentStart?: number; tools: Tools; open: Map<string, { name: string; start: number }> };
+type Run = { start: number; agent: number; agentStart?: number; tools: Tools; open: Map<string, { name: string; start: number; usual?: number }> };
 let run: Run | undefined;
 let timer: ReturnType<typeof setInterval> | undefined;
+/** Top-level bash calls in flight, in every mode. */
+const calls = new Map<string, { id: string; label: string; usual?: number; start: number }>();
+const text = (content: unknown) => (Array.isArray(content) ? content.map((c) => (c?.type === "text" ? c.text : "")).join("\n") : "");
 
 export default function (pi: ExtensionAPI) {
 	const status = (ctx: ExtensionContext, r: Run) => {
 		const now = Date.now();
 		const first = r.open.values().next().value; // open calls in start order
 		const agent = r.agent + (r.agentStart === undefined ? 0 : now - r.agentStart);
-		ctx.ui.setStatus("time", live({ total: now - r.start, agent, running: first && { name: first.name, ms: now - first.start } }));
+		ctx.ui.setStatus("time", live({ total: now - r.start, agent, running: first && { name: first.name, ms: now - first.start, usual: first.usual } }));
 	};
 
 	pi.on("before_agent_start", (_event, ctx) => {
@@ -63,10 +70,24 @@ export default function (pi: ExtensionAPI) {
 	});
 	// Nested calls (a codemode script's) are skipped, so they aren't counted twice.
 	// ponytail: a UI prompt's wait keeps counting (total, agent, live tool), add ui_prompt_* if it misleads
-	pi.on("tool_execution_start", (event) => {
-		if (run && !event.parentToolCallId) run.open.set(event.toolCallId, { name: event.toolName, start: Date.now() });
+	pi.on("tool_execution_start", (event, ctx) => {
+		if (event.parentToolCallId) return;
+		const key = event.toolName === "bash" ? commandKey(event.args?.command, ctx.cwd) : undefined;
+		const usual = key && estimate(key.id);
+		if (key) calls.set(event.toolCallId, { ...key, usual, start: Date.now() });
+		if (run) run.open.set(event.toolCallId, { name: event.toolName, start: Date.now(), usual });
+	});
+	pi.on("tool_result", (event) => {
+		const call = !event.parentToolCallId && event.toolName === "bash" ? calls.get(event.toolCallId) : undefined;
+		if (call?.usual === undefined) return;
+		const took = Date.now() - call.start;
+		if (took <= 2 * call.usual) return;
+		return { content: [...event.content, { type: "text", text: `[took ${fmt(took)}; this command usually takes ~${fmt(call.usual)} here]` }] };
 	});
 	pi.on("tool_execution_end", (event) => {
+		const call = calls.get(event.toolCallId);
+		calls.delete(event.toolCallId);
+		if (call && event.durationMs !== undefined && !excluded(text(event.result?.content))) record(call.id, call.label, event.durationMs);
 		if (!run || event.parentToolCallId) return;
 		run.open.delete(event.toolCallId);
 		if (event.durationMs === undefined) return; // the tool never ran
@@ -83,9 +104,11 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.notify(summary({ total: now - run.start, agent: run.agent, tools: run.tools, aborted: event.aborted }), "info");
 		run = undefined;
 	});
+	pi.on("session_start", () => void startBackfill());
 	// No setStatus: ctx may be stale.
 	pi.on("session_shutdown", () => {
 		clearInterval(timer);
 		run = undefined;
+		calls.clear();
 	});
 }

@@ -18,7 +18,7 @@ Use the same model router, subagents, and workflow prompts on every machine. `ro
 - **Workflow commands** — chain work with `/implement`, `/scout-and-plan`, and `/implement-and-review`.
 - **Plan first, build in a clean context** — a code change bigger than a quick fix gets a reviewed plan file first, and its build moves to a new session or a worker subagent depending on how full the session is.
 - **Stop-time review gate** — another model family reviews each prompt's changes before pi stops, and sends blocking issues back.
-- **Prompt timing** — the footer ticks the elapsed time while a prompt runs, and one line after it gives the total, the agent time, and the slowest tools.
+- **Prompt timing** — the footer ticks the elapsed time while a prompt runs, and one line after it gives the total, the agent time, and the slowest tools. While a bash command runs, the footer shows how long it usually takes, and a run past twice that tells the model; durations are kept in `~/.pi/agent/bash-times.json`, which stores only a hash of the directory and command, the executable's name, and the last 10 times, not paths or arguments.
 - **Claude CLI provider** — uses your logged-in `claude` CLI as a pi model provider.
 - **PDF reading** — `read` sends each PDF page's text, plus an image of only the pages with figures or no text.
 - **Office file reading** — `read` sends Word, Excel and PowerPoint files as text with tracked changes, comments, formulas, chart data and speaker notes, plus an image of only the slides that need one.

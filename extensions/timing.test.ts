@@ -1,7 +1,13 @@
 // Run: node --import ./extensions/test-hooks.ts --test --test-timeout=10000 extensions/timing.test.ts
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { mock, test } from "node:test";
+import { commandKey, read, record } from "./bash-times.ts";
 import timing, { fmt, live, summary } from "./timing.ts";
+
+process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "timing-agent-"));
 
 test("fmt keeps one decimal below 10s, then whole seconds and minutes", () => {
 	assert.deepEqual([850, 9400, 9960, 12000, 59600, 83000].map(fmt), ["0.9s", "9.4s", "10s", "12s", "1m 0s", "1m 23s"]);
@@ -14,21 +20,23 @@ test("summary lists the top 3 tools by time, drops an empty tools part, and mark
 	assert.equal(summary({ total: 3000, agent: 2000, tools: new Map(), aborted: true }), "⏱ total 3.0s · agent 2.0s (aborted)");
 	assert.equal(live({ total: 42000, agent: 30000, running: { name: "bash", ms: 12000 } }), "⏱ 42s · agent 30s · bash 12s");
 	assert.equal(live({ total: 42000, agent: 30000 }), "⏱ 42s · agent 30s");
+	assert.equal(live({ total: 140000, agent: 130000, running: { name: "bash", ms: 130000, usual: 316000 } }), "⏱ 2m 20s · agent 2m 10s · bash 2m 10s of ~5m 16s");
+	assert.equal(live({ total: 662000, agent: 662000, running: { name: "bash", ms: 662000, usual: 316000 } }), "⏱ 11m 2s · agent 11m 2s · bash 11m 2s · usually ~5m 16s");
 });
 
 // The extension's handlers, with every setStatus("time", …) call and notice collected; the clock and interval are mocked.
 // A tick over several intervals runs them all at its end time, so status values are checked one second at a time.
-function setup(t: any, mode = "tui") {
+function setup(t: any, mode = "tui", cwd = mkdtempSync(join(tmpdir(), "timing-cwd-"))) {
 	mock.timers.enable({ apis: ["Date", "setInterval"] });
 	const handlers: Record<string, any> = {};
 	timing({ on: (event: string, handler: any) => (handlers[event] = handler) } as any);
 	const statuses: (string | undefined)[] = [];
 	const notices: string[] = [];
-	const ctx = { mode, ui: { setStatus: (key: string, text?: string) => key === "time" && statuses.push(text), notify: (msg: string) => notices.push(msg) } };
+	const ctx = { mode, cwd, ui: { setStatus: (key: string, text?: string) => key === "time" && statuses.push(text), notify: (msg: string) => notices.push(msg) } };
 	const fire = (name: string, event: any = {}) => handlers[name](event, ctx);
 	// Every test ends with a shutdown, even a failing one, so no interval outlives it.
 	t.after(() => (fire("session_shutdown"), mock.timers.reset()));
-	return { fire, statuses, notices };
+	return { fire, statuses, notices, cwd };
 }
 
 test("the status ticks during a run and names the longest-running open tool", (t) => {
@@ -134,4 +142,36 @@ test("outside tui there is no status and no notice", (t) => {
 	fire("agent_end");
 	fire("agent_settled", { aborted: false });
 	assert.deepEqual([statuses, notices], [[], []]);
+});
+
+const bash = (toolCallId: string, command = "make test") => ({ toolCallId, toolName: "bash", args: { command } });
+const done = (toolCallId: string, durationMs: number, text = "ok") => ({ toolCallId, toolName: "bash", durationMs, result: { content: [{ type: "text", text }] } });
+
+test("a bash command with a usual time shows it, and a run past twice that gets a note", (t) => {
+	const { fire, statuses, cwd } = setup(t);
+	const { id } = commandKey("make test", cwd)!;
+	for (let i = 0; i < 3; i++) record(id, "make", 300000);
+	fire("before_agent_start");
+	fire("agent_start");
+	fire("tool_execution_start", bash("m"));
+	mock.timers.tick(1000);
+	assert.equal(statuses.at(-1), "⏱ 1.0s · agent 1.0s · bash 1.0s of ~5m 0s");
+	mock.timers.tick(600000);
+	const content = [{ type: "text", text: "ok" }];
+	assert.deepEqual(fire("tool_result", { ...bash("m"), content }), { content: [...content, { type: "text", text: "[took 10m 1s; this command usually takes ~5m 0s here]" }] });
+	fire("tool_execution_end", done("m", 601000));
+	assert.deepEqual(read()[id].ms, [300000, 300000, 300000, 601000]);
+	fire("tool_execution_start", bash("u"));
+	mock.timers.tick(1000);
+	assert.equal(fire("tool_result", { ...bash("u"), content }), undefined, "under twice the usual time");
+});
+
+test("outside tui a bash duration is still recorded, but not an excluded one", (t) => {
+	const { fire, cwd } = setup(t, "print");
+	const { id } = commandKey("make test", cwd)!;
+	fire("tool_execution_start", bash("p"));
+	fire("tool_execution_end", done("p", 5000));
+	fire("tool_execution_start", bash("x"));
+	fire("tool_execution_end", done("x", 9000, "Command timed out after 9 seconds"));
+	assert.deepEqual(read()[id].ms, [5000]);
 });
