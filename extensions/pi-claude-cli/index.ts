@@ -94,7 +94,9 @@ export default function (pi: ExtensionAPI) {
       const allTools = pi.getAllTools();
       if (Array.isArray(allTools)) {
         const direct = allTools.filter((t: any) => t.exposure === "direct").map((t: any) => t.name);
-        pi.setActiveTools([...new Set([...pi.getActiveTools(), ...direct])]);
+        // powershell only fails off Windows (and the sandbox blocks it anyway), so the model is not offered it there.
+        const offered = (name: string) => name !== "powershell" || process.platform === "win32";
+        pi.setActiveTools([...new Set([...pi.getActiveTools(), ...direct])].filter(offered));
       }
     });
 

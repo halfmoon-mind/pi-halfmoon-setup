@@ -61,6 +61,7 @@ const tools = [
 	figmaX,
 	{ name: "mcp__figma__y", description: "A codemode tool", parameters: { type: "object", properties: {} }, exposure: "codemode" },
 	{ name: "secret", description: "A hidden tool", parameters: { type: "object", properties: {} }, exposure: "hidden" },
+	{ name: "powershell", description: "Run PowerShell", parameters: { type: "object", properties: {} }, exposure: "direct" },
 ];
 const handlers: Record<string, any> = {};
 let active = ["read"];
@@ -206,9 +207,10 @@ test("claude gets only the tools pi declares, and restarts with a tool pi loads 
 	assert.deepEqual(second.names, ["read", "mcp__figma__x"]);
 });
 
-test("session_start activates pi's direct tools, never deferred, codemode or hidden ones", async () => {
+test("session_start activates pi's direct tools, never deferred, codemode or hidden ones, and powershell only on Windows", async () => {
+	active = ["read", "powershell"];
 	await handlers.session_start({}, { hasUI: false });
-	assert.deepEqual(active, ["read", "find"]);
+	assert.deepEqual(active, process.platform === "win32" ? ["read", "powershell", "find"] : ["read", "find"]);
 });
 
 test("tool arguments with a raw tab or newline inside a string still parse, as Claude writes them for tab-indented code", async () => {
