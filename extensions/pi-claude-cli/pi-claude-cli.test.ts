@@ -211,6 +211,18 @@ test("session_start activates pi's direct tools, never deferred, codemode or hid
 	assert.deepEqual(active, ["read", "find"]);
 });
 
+test("tool arguments with a raw tab or newline inside a string still parse, as Claude writes them for tab-indented code", async () => {
+	const lines = [
+		event({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "mcp__custom-tools__read" } }),
+		event({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"path": "/a\tb\nc"}' } }),
+		event({ type: "content_block_stop", index: 0 }),
+		event({ type: "message_delta", delta: { stop_reason: "tool_use" } }),
+		event({ type: "message_stop" }),
+	];
+	const reply = await run({ lines, hang: true }, [{ role: "user", content: "read it", timestamp: 1 }]);
+	assert.deepEqual(reply.content[0].arguments, { path: "/a\tb\nc" });
+});
+
 test("a claude crash ends the turn with claude's stderr", async () => {
 	const reply = await run({ stderr: "Not logged in", exit: 1 }, [{ role: "user", content: "hi", timestamp: 1 }]);
 	assert.deepEqual([reply.stopReason, reply.errorMessage], ["error", "Claude CLI exited with code 1: Not logged in"]);

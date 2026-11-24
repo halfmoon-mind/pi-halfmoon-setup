@@ -325,7 +325,18 @@ export function createEventBridge(
       // Final JSON parse with fallback to raw string
       let finalArgs: Record<string, unknown> | string;
       try {
-        const parsed = JSON.parse(block.partialJson);
+        let parsed;
+        try {
+          parsed = JSON.parse(block.partialJson);
+        } catch {
+          // Claude sometimes writes a raw tab or newline inside a string (tab-indented code in edit's
+          // oldText), which strict JSON rejects: escape control characters inside string literals and retry.
+          parsed = JSON.parse(
+            block.partialJson.replace(/"(?:[^"\\]|\\.)*"/gs, (s) =>
+              s.replace(/[\u0000-\u001f]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0")),
+            ),
+          );
+        }
         finalArgs = translateClaudeArgsToPi(block.claudeName, parsed);
       } catch {
         finalArgs = block.partialJson;
