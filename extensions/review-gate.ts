@@ -1,8 +1,8 @@
 /**
  * A stop-time review gate, as the codex plugin adds to Claude Code: when the run for a prompt changed
  * the repository, the `reviewer` agent (another model family) reviews those changes, against the user's recent messages and the tool calls the run made with how each ended, before pi settles,
- * and a blocking finding goes back to the model for another pass. The model gets at most
- * MAX_REVIEWS reviews per prompt, and a change past the last one is flagged as unreviewed. Work from a
+ * and a blocking finding goes back to the model for another pass. Each user message, queued ones included,
+ * gets its own MAX_REVIEWS reviews, and a change past the last one is flagged as unreviewed. Work from a
  * handoff plan is also checked against the steps the plan ticks, and before the review the harness runs
  * the checks of steps ticked during the prompt (and the success criteria once none is left), sending the
  * model back while one fails. Only interactive sessions (and print mode under the eval, PI_EVAL=1) are gated, so a subagent's own pi
@@ -179,6 +179,14 @@ export default function (pi: ExtensionAPI) {
 		base = seen?.split("\n", 1)[0];
 		reviews = 0;
 		runStart = Date.now();
+	});
+
+	// A typed message queued during a run arrives without before_agent_start; custom ones (a BLOCK finding, plan checks) don't reset, so a BLOCK loop still hits the cap.
+	pi.on("message_start", (event) => {
+		if (event.message.role === "user") {
+			reviews = 0;
+			checkRounds = 0;
+		}
 	});
 
 	pi.on("agent_before_settle", async (event, ctx) => {

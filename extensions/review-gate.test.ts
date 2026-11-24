@@ -255,7 +255,7 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	assert.equal(notices.at(-1), "review: ok");
 });
 
-test("a queued message waits for the running review; Esc skips the review and the next settle reviews those changes", async () => {
+test("a queued message waits for the running review; Esc skips the review and the next settle reviews those changes; a delivered user message starts a new review budget", async () => {
 	const savedArgv1 = process.argv[1];
 	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "review-gate-agent-"));
 	const repo = mkdtempSync(join(tmpdir(), "review-gate-repo-"));
@@ -359,6 +359,19 @@ test("a queued message waits for the running review; Esc skips the review and th
 		assert.equal(await settle(), undefined);
 		assert.match(notices.at(-1)!, /used its 3 reviews/);
 		assert.equal(reviewCount(), 5);
+
+		// Custom and assistant messages keep the budget; a delivered user message resets it.
+		handlers.message_start({ message: { role: "custom" } }, ctx);
+		handlers.message_start({ message: { role: "assistant" } }, ctx);
+		writeFileSync(join(repo, "a.txt"), "6\n");
+		assert.equal(await settle(), undefined);
+		assert.match(notices.at(-1)!, /used its 3 reviews/);
+		assert.equal(reviewCount(), 5);
+		handlers.message_start({ message: { role: "user" } }, ctx);
+		writeFileSync(join(repo, "a.txt"), "7\n");
+		assert.equal(await settle(), undefined);
+		assert.equal(reviewCount(), 6);
+		assert.equal(notices.at(-1), "review: fine");
 	} finally {
 		rmSync(slow, { force: true });
 		process.argv[1] = savedArgv1!;
