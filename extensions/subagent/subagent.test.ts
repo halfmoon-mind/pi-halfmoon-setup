@@ -183,6 +183,11 @@ test("collapsed, a subagent result is one row per agent: its answer's first line
 	assert.deepEqual(shown("parallel", [bash], {}, { isPartial: true })[1], "⏳ worker  now: $ cd x ls pwd");
 	const described = agent("worker", -1, [{ type: "toolCall", name: "bash", arguments: { command: "cd x && ls", description: "List files" } }]);
 	assert.deepEqual(shown("parallel", [described], {}, { isPartial: true })[1], "⏳ worker  now: List files");
+	const thinking = agent("plan-reviewer", -1, [
+		{ type: "thinking", thinking: "**Checking the header**\n\nMore detail" },
+		{ type: "toolCall", name: "grep", arguments: { pattern: "X" } },
+	]);
+	assert.deepEqual(shown("parallel", [thinking], {}, { isPartial: true })[1], "⏳ plan-reviewer  Checking the header · now: grep /X/ in .");
 
 	// Expanded while running, parallel keeps its log preview.
 	const checked = agent("planner", 0, [

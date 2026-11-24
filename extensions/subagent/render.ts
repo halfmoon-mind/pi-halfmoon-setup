@@ -122,6 +122,24 @@ function getDisplayItems(messages: Message[]): DisplayItem[] {
 	return items;
 }
 
+/** What a running agent is on: its latest reasoning heading, then `now: ` and its last tool call (a bash call's description when it has one), or "starting" before any. */
+export function nowDoing(messages: Message[], themeFg: (color: any, text: string) => string): string {
+	const last = getDisplayItems(messages).findLast((i) => i.type === "toolCall");
+	const description = last?.type === "toolCall" && last.name === "bash" ? last.args.description : undefined;
+	const now =
+		typeof description === "string" && description.trim()
+			? themeFg("toolOutput", description)
+			: last?.type === "toolCall"
+				? formatToolCall(last.name, last.args, themeFg)
+				: themeFg("muted", "starting");
+	const thinking = messages
+		.flatMap((m) => (m.role === "assistant" ? m.content : []))
+		.findLast((p) => p.type === "thinking" && p.thinking.trim());
+	const text = thinking?.type === "thinking" ? thinking.thinking : "";
+	const heading = (text.match(/\*\*(.+?)\*\*/s)?.[1] ?? text.trim().split("\n")[0] ?? "").replaceAll("**", "").trim().slice(0, 80);
+	return `${heading ? `${heading} · ` : ""}${themeFg("muted", "now: ")}${now}`;
+}
+
 export const renderCall: NonNullable<ToolDefinition<typeof SubagentParams, SubagentDetails>["renderCall"]> = (args, theme, context) => {
 	// Collapsed, the user sees which agents run; the task text is for the agent, ctrl+o shows it.
 	const scope: AgentScope = args.agentScope ?? "user";
@@ -191,15 +209,7 @@ export const renderResult: NonNullable<ToolDefinition<typeof SubagentParams, Sub
 	const addAgent = (box: Container, r: SingleResult) => {
 		const head = `${statusIcon(r)} ${theme.fg("accent", r.agent)}`;
 		if (r.exitCode === -1) {
-			const last = getDisplayItems(r.messages).findLast((i) => i.type === "toolCall");
-			const description = last?.type === "toolCall" && last.name === "bash" ? last.args.description : undefined;
-			const now =
-				typeof description === "string" && description.trim()
-					? theme.fg("toolOutput", description)
-					: last?.type === "toolCall"
-						? formatToolCall(last.name, last.args, theme.fg.bind(theme))
-						: theme.fg("muted", "starting");
-			box.addChild(row(`${head}  ${theme.fg("muted", "now: ")}${now}`));
+			box.addChild(row(`${head}  ${nowDoing(r.messages, theme.fg.bind(theme))}`));
 		} else if (isFailedResult(r)) {
 			box.addChild(row(`${head}${r.stopReason ? ` ${theme.fg("error", `[${r.stopReason}]`)}` : ""}`));
 			if (r.errorMessage) box.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));

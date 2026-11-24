@@ -13,11 +13,12 @@ import { execFileSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { ImageContent, TextContent, Tool } from "@earendil-works/pi-ai";
+import type { ImageContent, Message, TextContent, Tool } from "@earendil-works/pi-ai";
 import { type BoundaryContextPreview, type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { gated, parsePlan, runCheck } from "./checks.ts";
 import { activePlan, steps } from "./handoff.ts";
 import { discoverAgents } from "./subagent/agents.ts";
+import { nowDoing } from "./subagent/render.ts";
 import { getResultOutput, isFailedResult, runSingleAgent } from "./subagent/run.ts";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -273,10 +274,11 @@ export default function (pi: ExtensionAPI) {
 		let shown = 0;
 		let shownQueued = false;
 		let retrying = false;
+		let reviewerMessages: Message[] = [];
 		const showReview = (s: number) => {
 			const queued = ctx.hasPendingMessages();
 			const hint = queued ? " · Esc: skip the review and run the queued message" : "";
-			ctx.ui.setWidget("review", [ctx.ui.theme.fg("accent", `GPT reviewing the changes${retrying ? " again" : ""}…${s ? ` ${s >= 60 ? `${Math.floor(s / 60)}m` : ""}${s % 60}s` : ""}${hint}`)]);
+			ctx.ui.setWidget("review", [ctx.ui.theme.fg("accent", `GPT reviewing the changes${retrying ? " again" : ""}…${s ? ` ${s >= 60 ? `${Math.floor(s / 60)}m` : ""}${s % 60}s` : ""}${hint}`), nowDoing(reviewerMessages, ctx.ui.theme.fg.bind(ctx.ui.theme))]);
 			shown = s;
 			shownQueued = queued;
 		};
@@ -310,7 +312,14 @@ export default function (pi: ExtensionAPI) {
 				let timedOut = false;
 				try {
 					const agents = discoverAgents(ctx.cwd, "user").agents;
-					result = await runSingleAgent(ctx.cwd, {}, agents, "reviewer", task, undefined, undefined, AbortSignal.any([timeout, pending.signal]), undefined, (results) => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results }));
+					result = await runSingleAgent(ctx.cwd, {}, agents, "reviewer", task, undefined, undefined, AbortSignal.any([timeout, pending.signal]), (partial) => {
+						reviewerMessages = partial.details?.results[0]?.messages ?? [];
+						try {
+							if (!pending.signal.aborted) showReview(shown);
+						} catch {
+							pending.abort(); // a stale ctx, as in the poll
+						}
+					}, (results) => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results }));
 					if (isFailedResult(result)) failure = `exit ${result.exitCode}, ${result.stopReason ?? "no stop reason"}: ${getResultOutput(result).trim()}`;
 					else output = getResultOutput(result).trim();
 					if (!pending.signal.aborted) v = parseVerdict(output) ?? (output ? await extract(ctx, output, pending.signal) : undefined);
@@ -324,6 +333,7 @@ export default function (pi: ExtensionAPI) {
 				failure = "";
 				result = undefined;
 				v = undefined;
+				reviewerMessages = [];
 				retrying = true;
 				try {
 					showReview(Math.floor((Date.now() - reviewStart) / 1000));

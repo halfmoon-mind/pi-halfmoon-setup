@@ -23,15 +23,21 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	run("add", ".");
 	run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
 
-	// Stand-in for the reviewer's pi: logs each task and answers with the verdict in `verdict.txt`.
+	// Stand-in for the reviewer's pi: logs each task and answers with the verdict in `verdict.txt`; with `progress.txt`, it first shows a step and waits.
 	const dir = mkdtempSync(join(tmpdir(), "fake-pi-"));
 	const verdict = join(dir, "verdict.txt");
 	const log = join(dir, "tasks.log");
+	const progress = join(dir, "progress.txt");
 	process.argv[1] = join(dir, "pi.mjs");
 	writeFileSync(
 		process.argv[1],
-		`import { appendFileSync, readFileSync } from "node:fs";
+		`import { appendFileSync, existsSync, readFileSync } from "node:fs";
 		appendFileSync(${JSON.stringify(log)}, process.argv.at(-1) + "\\n---\\n");
+		if (existsSync(${JSON.stringify(progress)})) {
+			const step = { role: "assistant", content: [{ type: "thinking", thinking: "**Reading the diff**\\n\\nMore detail" }, { type: "toolCall", id: "r1", name: "read", arguments: { path: "a.txt" } }], stopReason: "toolUse" };
+			console.log(JSON.stringify({ type: "message_end", message: step }));
+			await new Promise((r) => setTimeout(r, 1000));
+		}
 		const message = { role: "assistant", content: [{ type: "text", text: readFileSync(${JSON.stringify(verdict)}, "utf8") }], stopReason: "stop" };
 		console.log(JSON.stringify({ type: "message_end", message }));`,
 	);
@@ -73,8 +79,11 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	writeFileSync(join(repo, "a.txt"), "2\n");
 	assert.equal(await settle("json"), undefined, "a subagent's pi is never gated");
 	writeFileSync(verdict, "BLOCK: off by one\nCritical: a.txt:1");
+	writeFileSync(progress, "");
 	const pending = settle();
-	assert.deepEqual(widgets.review, ["GPT reviewing the changes…"], "the wait shows while the reviewer runs");
+	assert.deepEqual(widgets.review, ["GPT reviewing the changes…", "now: starting"], "the wait shows while the reviewer runs");
+	await until(() => widgets.review?.[1] === "Reading the diff · now: read a.txt");
+	rmSync(progress);
 	const blocked = await pending;
 	assert.equal(widgets.review, undefined, "and is gone once it answers");
 	assert.equal(blocked.continue, true);
