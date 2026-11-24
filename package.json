@@ -10,7 +10,7 @@
     "test": "node --import ./extensions/test-hooks.ts --test --test-timeout=60000 'extensions/**/*.test.ts'"
   },
   "pi": {
-    "extensions": ["./extensions/sandbox/index.ts", "./extensions/router.ts", "./extensions/footer.ts", "./extensions/subagent/index.ts", "./extensions/review-gate.ts", "./extensions/handoff.ts", "./extensions/pi-claude-cli/index.ts", "./extensions/pdf-read.ts", "./extensions/compact-tools.ts", "./extensions/tab-follow-up.ts", "./extensions/startup.ts", "./extensions/timing.ts"],
+    "extensions": ["./extensions/sandbox/index.ts", "./extensions/router.ts", "./extensions/footer.ts", "./extensions/subagent/index.ts", "./extensions/review-gate.ts", "./extensions/handoff.ts", "./extensions/pi-claude-cli/index.ts", "./extensions/pdf-read.ts", "./extensions/compact-tools.ts", "./extensions/edit-diff.ts", "./extensions/tab-follow-up.ts", "./extensions/startup.ts", "./extensions/timing.ts"],
     "prompts": ["./prompts"]
   },
   "peerDependencies": {

@@ -1,7 +1,7 @@
 // Looking around (read, grep, find, ls) shows just its call line, and calls made together share one
 // line ("read 3 · grep 1  router.ts, footer.ts, …"). bash shows the model-written description, or
 // else its command's first line without a leading `cd` into the session's directory. ctrl+o shows
-// everything, and errors always show. edit and write keep pi's display: their diffs are the work.
+// everything, and errors always show. write keeps pi's display; edit's diff is redrawn in edit-diff.ts.
 // read is overridden in pdf-read.ts, so it wraps itself there with compact().
 import { homedir } from "node:os";
 import { basename } from "node:path";
