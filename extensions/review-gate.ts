@@ -5,8 +5,10 @@
  * gets its own MAX_REVIEWS reviews, and a change past the last one is flagged as unreviewed. Work from a
  * handoff plan is also checked against the steps the plan ticks, and before the review the harness runs
  * the checks of steps ticked during the prompt (and the success criteria once none is left), sending the
- * model back while one fails. Only interactive sessions (and print mode under the eval, PI_EVAL=1) are gated, so a subagent's own pi
- * never reviews itself. `/review-gate on|off` switches it for every pi (saved in <agent dir>/review-gate.json).
+ * model back while one fails. An ALLOW with Warnings or Suggestions sends the model back for one
+ * read-only turn that labels each against the code (the review_triage tool records them) and asks the
+ * user which to act on. Only interactive sessions (and print mode under the eval, PI_EVAL=1) are gated,
+ * so a subagent's own pi never reviews itself. `/review-gate on|off` switches it for every pi (saved in <agent dir>/review-gate.json).
  */
 
 import { execFileSync } from "node:child_process";
@@ -35,6 +37,7 @@ const LATEST_KEEP = 10_000; // each end of the latest one: read whole up to 20,0
 const MAX_CALLS = 60;
 const MAX_LOG = 8000;
 const RESULT_TAIL = 300;
+const TRIAGE = "Check each Warnings and Suggestions item against the code now, reading only — do not edit files. Label each item: fix = true, and a gap within the user's request; out-of-scope = true, but outside that request or already there before it; wrong = contradicted by the code; unverified = cannot be checked here (a device, the UI, another OS, an external service); opinion = taste or an alternative approach, with no factual claim. Call review_triage once with every item, giving its location and one line of evidence. The user reads only your final reply, so write it as the full report on their request: what they asked, what was done, and how it was checked. Put the labelled comments at the end, ordered fix, out-of-scope, unverified, wrong, opinion, and ask the user which to act on. Fix nothing unless the user asks.";
 const REPORT = "The user reads only your final reply, so write it as the full report on their request: what they asked, what was done, and how it was checked, with the review fix as a short note at the end.";
 
 const git = (cwd: string, ...args: string[]) =>
@@ -165,6 +168,30 @@ export default function (pi: ExtensionAPI) {
 	const showSwitch = (ctx: ExtensionContext) => ctx.ui.setStatus("review", off() ? ctx.ui.theme.fg("warning", "review off") : undefined);
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode === "tui") showSwitch(ctx);
+		if (gated(ctx.mode)) {
+			pi.registerTool({
+				name: "review_triage",
+				label: "Review triage",
+				description:
+					"Call only after a review-notes message, once with every Warnings and Suggestions item, after checking each against the code. Records the labels; fixes nothing.",
+				promptSnippet: "Record the triage of the reviewer's non-blocking comments",
+				// Explicit tuples: .map(Type.Literal) passes the index as schema options, and Union inference needs a tuple.
+				parameters: Type.Object({
+					items: Type.Array(
+						Type.Object({
+							section: Type.Union([Type.Literal("Warnings"), Type.Literal("Suggestions")]),
+							where: Type.String({ description: "file:line or a short location" }),
+							label: Type.Union([Type.Literal("fix"), Type.Literal("out-of-scope"), Type.Literal("wrong"), Type.Literal("unverified"), Type.Literal("opinion")]),
+							reason: Type.String({ description: "one line of evidence" }),
+						}),
+					),
+				}),
+				async execute(_id, params, _signal, _onUpdate, _ctx) {
+					pi.appendEntry("review-triage", { items: params.items });
+					return { content: [{ type: "text", text: `Recorded ${params.items.length} triaged comment(s).` }], details: undefined };
+				},
+			});
+		}
 	});
 
 	let base: string | undefined; // HEAD when the prompt started
@@ -387,15 +414,15 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(`review: ${v.reason}`, "info");
 			const notes = reviewNotes(output);
 			if (!notes) return;
-			// No `continue`: pi commits boundary entries either way, so the comments show now and reach the model with the next prompt, with no forced fix.
-			const content = `The reviewer allowed the changes (${v.reason}) with these non-blocking comments. Weigh them with the user; do not act on them unless asked.\n\n${notes}`;
+			// The comments send the model back for a read-only triage; an unchanged repository and plan ticks mean the next settle does not review again.
+			const content = `The reviewer allowed the changes (${v.reason}) with these non-blocking comments. ${TRIAGE}\n\n${notes}`;
 			// A message queued during the review: an entry here would end the context, so pi would run a turn on the
 			// comments alone before it; in that message's queue they go with it (steeringMode and followUpMode "all", as setup.sh sets).
 			if (ctx.hasPendingMessages()) {
 				pi.sendMessage({ customType: "review-notes", content, display: true }, { deliverAs: steered ? "steer" : "followUp" });
 				return;
 			}
-			return { entries: [...event.entries, { type: "custom_message", customType: "review-notes", content, display: true }] };
+			return { entries: [...event.entries, { type: "custom_message", customType: "review-notes", content, display: true }], continue: true };
 		}
 		const verdict = output.split("\n", 1)[0];
 		ctx.ui.setStatus("review", ctx.ui.theme.fg("warning", "unreviewed"));

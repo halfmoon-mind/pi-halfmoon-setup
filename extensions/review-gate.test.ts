@@ -44,8 +44,9 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 
 	const handlers: Record<string, any> = {};
 	const commands: Record<string, any> = {};
+	const tools: Record<string, any> = {};
 	const logged: any[] = [];
-	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: (name: string, def: any) => (commands[name] = def) } as any);
+	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: (name: string, def: any) => (commands[name] = def), registerTool: (def: any) => (tools[def.name] = def) } as any);
 	const notices: string[] = [];
 	const statuses: Record<string, string | undefined> = {};
 	const widgets: Record<string, string[] | undefined> = {};
@@ -111,14 +112,35 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	writeFileSync(join(repo, "a.txt"), "3\n");
 	writeFileSync(verdict, "ALLOW: fixed\nUnverified: none\n\n## Critical (must fix)\nNone\n\n## Warnings (should fix)\n- `a.txt:1` - no trailing newline check\n\n## Suggestions (consider)\n- None\n\n## Summary\nFine.");
 	const allowed = await settle();
-	assert.equal(allowed.continue, undefined, "an ALLOW's comments do not send the model back");
+	assert.equal(allowed.continue, true, "an ALLOW's comments send the model back for a read-only triage");
 	assert.deepEqual(allowed.entries.map((e: any) => [e.type, e.customType, e.display]), [["custom_message", "review-notes", true]]);
-	assert.match(allowed.entries[0].content, /allowed the changes \(fixed\)[\s\S]*## Warnings[\s\S]*no trailing newline/);
-	assert.doesNotMatch(allowed.entries[0].content, /Suggestions|Summary|Critical/);
+	const notes = allowed.entries[0].content;
+	assert.match(notes, /^The reviewer allowed the changes \(fixed\)/);
+	for (const re of [/do not edit files/, /fix[\s\S]*out-of-scope[\s\S]*wrong[\s\S]*unverified[\s\S]*opinion/, /review_triage/, /full report on their request/, /ordered fix, out-of-scope, unverified, wrong, opinion/, /which to act on/]) assert.match(notes, re);
+	assert.match(notes, /## Warnings[\s\S]*no trailing newline/);
+	assert.doesNotMatch(notes, /## Suggestions|## Summary|## Critical/);
 	assert.deepEqual(notices, ["review: fixed"]);
+	assert.equal(await settle(), undefined, "the triage turn edited nothing, so no second review");
 	writeFileSync(verdict, "ALLOW: fine");
 	assert.equal(reviewCount(), 2);
 	assert.deepEqual(logged.map((entry) => [entry.customType, entry.verdict, typeof entry.usage.cost]), [["review-gate", "BLOCK: off by one", "number"], ["review-gate", "ALLOW: fixed", "number"]]);
+
+	// The triage tool exists only in a gated pi, and records labels without changing the repository.
+	handlers.session_start({}, { ...ctx, mode: "json" });
+	assert.equal(tools.review_triage, undefined);
+	handlers.session_start({}, ctx);
+	assert.ok(tools.review_triage);
+	const item = tools.review_triage.parameters.properties.items.items.properties;
+	assert.deepEqual(item.label.anyOf.map((s: any) => s.const), ["fix", "out-of-scope", "wrong", "unverified", "opinion"]);
+	assert.deepEqual(item.section.anyOf.map((s: any) => s.const), ["Warnings", "Suggestions"]);
+	const items = [{ section: "Warnings", where: "a.txt:1", label: "unverified", reason: "No newline-validation code exists in this fixture." }];
+	const repoBefore = snapshot(repo);
+	const triaged = await tools.review_triage.execute("t", { items }, undefined, undefined, ctx);
+	assert.deepEqual(logged.at(-1), { customType: "review-triage", items });
+	assert.equal(triaged.content[0].text, "Recorded 1 triaged comment(s).");
+	assert.equal(snapshot(repo), repoBefore);
+	assert.equal(await settle(), undefined, "recording the triage is no change to review");
+	assert.equal(reviewCount(), 2);
 	assert.doesNotMatch(readFileSync(log, "utf8"), /follows the plan/);
 
 	// Work from a handoff plan is also checked against the steps the plan ticks.
@@ -326,6 +348,7 @@ test("a queued message waits for the running review; Esc skips the review and th
 		assert.deepEqual(notices, []);
 		pending = false;
 		assert.equal(await settle(), undefined, "no further change, still reviewed");
+		assert.equal(sent.length, 0);
 		assert.equal(reviewCount(), 1);
 		assert.equal(logged.length, 1);
 		assert.deepEqual(notices, ["review: fine"]);
@@ -344,7 +367,7 @@ test("a queued message waits for the running review; Esc skips the review and th
 		assert.equal(notices.length, 1);
 		rmSync(slow);
 		assert.equal(await a, undefined, "no entry: one would end the context, and pi would answer the comments before the queued message");
-		assert.deepEqual(sent.map(([m, o]) => [m.customType, m.display, /## Suggestions[\s\S]*name it/.test(m.content), o]), [["review-notes", true, true, { deliverAs: "followUp" }]], "the comments follow the queued message");
+		assert.deepEqual(sent.map(([m, o]) => [m.customType, m.display, /## Suggestions[\s\S]*name it/.test(m.content), /review_triage/.test(m.content), o]), [["review-notes", true, true, true, { deliverAs: "followUp" }]], "the comments follow the queued message");
 		assert.deepEqual((await modelCalls("followUp", sent)).map((c) => c.slice(-2).map((t) => t.slice(0, 30))), [["next", "The reviewer allowed the chang"]], "one model call, with the queued message and then the comments");
 		rmSync(withNotes);
 		assert.deepEqual(notices, ["review: fine", "review: fine"]);
