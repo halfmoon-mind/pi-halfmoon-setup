@@ -239,7 +239,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Enter during a run queues a steer, which pi delivers before any follow-up (Tab), so review notes join that queue.
-	// ponytail: a steer taken back into the editor (Option+Up) and queued again with Tab still counts; track the queue if that matters.
+	// A steer taken back into the editor (Option+Up) leaves the queue empty, which clears this when the settle starts and in the review's poll.
+	// ponytail: taken back and queued again with Tab within one 500ms poll still counts as a steer.
 	let steered = false;
 	pi.on("input", (event) => {
 		if (event.streamingBehavior === "steer") steered = true;
@@ -256,6 +257,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_before_settle", async (event, ctx) => {
 		if (!gated(ctx.mode) || event.outcome !== "completed" || !base || off() || ctx.hasPendingMessages()) return; // pi continues for the queued message, and the next settle reviews
+		steered = false; // nothing is queued now, so an earlier steer was delivered or taken back; one queued during the checks below stays
 		const now = snapshot(ctx.cwd);
 		const p = plan(ctx);
 		if (!now) return;
@@ -350,6 +352,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const s = Math.floor((Date.now() - reviewStart) / 1000);
 				const queued = ctx.hasPendingMessages();
+				if (!queued) steered = false;
 				if ((s !== shown || queued !== shownQueued) && !pending.signal.aborted) showReview(s);
 			} catch {
 				pending.abort();

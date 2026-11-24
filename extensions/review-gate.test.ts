@@ -441,7 +441,35 @@ test("a queued message waits for the running review; Esc skips the review and th
 		assert.equal((await modelCalls("followUp", sent)).length, 2, "notes in the wrong queue would cost a call of their own");
 		pending = false;
 		rmSync(withNotes);
-		handlers.message_start({ message: { role: "user" } }, ctx);
+
+		// A steer taken back into the editor (Option+Up) and queued again with Tab, before the review or during it, is a follow-up.
+		const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+		const steerInput = (streamingBehavior: string) => handlers.input({ type: "input", text: "next", source: "interactive", streamingBehavior }, ctx);
+		for (const [n, before] of [[9, true], [10, false]] as const) {
+			sent.length = 0;
+			if (before) steerInput("steer"); // taken back before the settle, so nothing is queued when the review starts
+			writeFileSync(join(repo, "a.txt"), `${n}\n`);
+			writeFileSync(slow, "");
+			writeFileSync(withNotes, "");
+			const requeued = settle();
+			await until(() => reviewCount() === n - 1);
+			if (!before) {
+				steerInput("steer");
+				pending = true;
+				await sleep(700);
+				pending = false; // Option+Up
+				await sleep(700);
+			}
+			steerInput("followUp");
+			pending = true;
+			rmSync(slow);
+			assert.equal(await requeued, undefined);
+			assert.deepEqual(sent.map(([, o]) => o), [{ deliverAs: "followUp" }], `taken back ${before ? "before" : "during"} the review`);
+			assert.equal((await modelCalls("followUp", sent)).length, 1);
+			pending = false;
+			rmSync(withNotes);
+			handlers.message_start({ message: { role: "user" } }, ctx);
+		}
 	} finally {
 		rmSync(slow, { force: true });
 		process.argv[1] = savedArgv1!;
@@ -529,6 +557,7 @@ test("before the review, the harness runs the checks of steps the prompt ticked,
 	const dir = mkdtempSync(join(tmpdir(), "fake-pi-"));
 	const log = join(dir, "tasks.log");
 	const slow = join(dir, "slow");
+	const withNotes = join(dir, "notes");
 	process.argv[1] = join(dir, "pi.mjs");
 	writeFileSync(
 		process.argv[1],
@@ -536,7 +565,8 @@ test("before the review, the harness runs the checks of steps the prompt ticked,
 		appendFileSync(${JSON.stringify(log)}, "task\\n---\\n");
 		const end = Date.now() + 120_000;
 		while (existsSync(${JSON.stringify(slow)}) && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
-		console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ALLOW: fine" }], stopReason: "stop" } }));`,
+		const text = "ALLOW: fine" + (existsSync(${JSON.stringify(withNotes)}) ? "\\n\\n## Suggestions\\n- a.txt:1 - name it" : "");
+		console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } }));`,
 	);
 	const reviewCount = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n---\n").length - 1 : 0);
 
@@ -551,7 +581,8 @@ test("before the review, the harness runs the checks of steps the prompt ticked,
 
 	const handlers: Record<string, any> = {};
 	const logged: any[] = [];
-	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: () => {} } as any);
+	const sent: any[] = [];
+	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: () => {}, sendMessage: (message: any, options: any) => sent.push([message, options]) } as any);
 	const notices: string[] = [];
 	const widgets: string[] = [];
 	let esc: ((data: string) => any) | undefined;
@@ -693,6 +724,28 @@ test("before the review, the harness runs the checks of steps the prompt ticked,
 		assert.equal(await settle(), undefined);
 		assert.match(notices.at(-1)!, /plan checks still fail and nothing changed since; unreviewed/);
 		assert.equal(reviewCount(), reviewed + 2);
+
+		// Enter while the last check runs queues a steer after the settle started: the comments of the ALLOW that follows join it.
+		rPlan("x", " ");
+		handlers.before_agent_start({}, ctx); // r.md: steps 1 and 2 ticked
+		rPlan("x", "x");
+		change();
+		writeFileSync(withNotes, "");
+		calls.length = 0;
+		seam.exec = async (...args) => {
+			if (args[0] === "r-crit") {
+				handlers.input({ type: "input", text: "next", source: "interactive", streamingBehavior: "steer" }, ctx);
+				pending = true;
+			}
+			return mock(...args);
+		};
+		assert.equal(await settle(), undefined);
+		assert.deepEqual(calls, ["r-3", "r-crit"]);
+		assert.equal(reviewCount(), reviewed + 3);
+		assert.deepEqual(sent.map(([, o]) => o), [{ deliverAs: "steer" }]);
+		seam.exec = mock;
+		pending = false;
+		rmSync(withNotes);
 	} finally {
 		rmSync(slow, { force: true });
 		seam.exec = saved.exec;
