@@ -31,6 +31,14 @@ One line per requirement, quoted from the source, not summarised, ending with th
 
 Read each source yourself and quote it; never restate the caller's summary. For a source you cannot open with your tools (a URL), quote the text the caller passed for it. Each error code, allowed format, response field, expiry or retry rule, and Figma icon or button placement is its own line. A Figma value that looks like a component default (its layer still named with the component's placeholder text) is `out: unconfirmed`; the caller asks the user and replaces it before building, since handoff refuses it. Every requirement ends ` - step: N[, M]` or ` - out: <reason, who agreed>`, on one line.
 
+## Assumptions
+What the plan relies on being true, one line each:
+- A1. `agent_before_settle` entries are committed without `continue` — checked: <pi>/core/agent-session.js:1637-1642
+- A2. The device keeps the socket open while the app is in the background — agreed: user, 2026-11-20
+- A3. The sandbox reports a start failure to the parent — unchecked: the failure happens inside the child and nothing returns it
+
+List each item the caller passed as decided, and each fact about the code, an API or a tool a step builds on. Read the line that shows it yourself and cite it (`file:line`, comma-separated); for a decided preference, cite the code it builds on. `— agreed:` is only for what the code cannot show and the user accepted. When the code contradicts a decided item or leaves a gap in it (a case it does not handle, a path that cannot work), write ` — unchecked: <what the code shows>` instead of building on it silently; handoff refuses the plan until the caller checks it, or asks the user and changes the plan.
+
 ## Plan
 Numbered steps, each small and actionable, as checkboxes the implementer ticks when the step's check passes. Each step's checkbox line ends with the files it edits and its check; details can follow on indented lines:
 - [ ] 1. <what> - files: a.ts, b.ts (new) - check: `<command>`

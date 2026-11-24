@@ -169,6 +169,7 @@ test("handoff refuses a malformed plan it has not accepted; under PI_EVAL=1 prin
 		assert.match(note, /^Before you edit code[\s\S]*- files: a\.ts, b\.ts \(new\) - check:/);
 		assert.match(note, /no one is there to approve it/, "no run waits for a go-ahead no one gives");
 		assert.doesNotMatch(note, /wait for their go-ahead/);
+		assert.match(note, /## Assumptions[\s\S]*unchecked/, "PLAN_FIRST names the Assumptions endings");
 		handlers.session_start({}, { mode: "print", cwd });
 		assert.ok(tools.handoff);
 		assert.equal(tools.handoff.executionMode, "sequential", "a write in the same batch lands before handoff reads the plan");
@@ -183,6 +184,9 @@ test("handoff refuses a malformed plan it has not accepted; under PI_EVAL=1 prin
 			return true;
 		});
 		assert.deepEqual(plans(), ["docs/plans/x.md"], "a refused plan is not recorded");
+		writeFileSync(join(cwd, "docs/plans/assume.md"), "- [ ] 1. do it - files: a.ts (new) - check: `true`\n\n## Success criteria\n- `true`\n\n## Assumptions\n- A1. x — unchecked: not found\n");
+		await assert.rejects(run("docs/plans/assume.md"), /A1 is unchecked \(not found\)/);
+		assert.deepEqual(plans(), ["docs/plans/x.md"], "a plan with an unchecked assumption is not recorded");
 		branch.push({ type: "custom", customType: "handoff-plan", data: { path: "docs/plans/bad.md" } });
 		assert.match((await run("docs/plans/bad.md")).content[0].text, /^Continue in this session/, "a plan the session already accepted is exempt");
 

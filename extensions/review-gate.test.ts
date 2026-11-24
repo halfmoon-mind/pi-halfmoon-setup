@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { seam } from "./checks.ts";
-import reviewGate, { parseVerdict, reviewNotes, reviewTask, runLog, snapshot } from "./review-gate.ts";
+import reviewGate, { checkDecision, DECISION, decisionSkip, decisionTask, GAPS, parseVerdict, reviewNotes, reviewTask, runLog, snapshot } from "./review-gate.ts";
 import { NOT_STARTED, START_FAILED } from "./sandbox/policy.ts";
 
 // Waits, up to 30 s, until `ok()` holds.
@@ -1067,4 +1067,180 @@ test("an unavailable read-only sandbox discards the attempt and reviews a valida
 		process.argv[1] = savedArgv1!;
 		Object.keys(saved).forEach(restore);
 	}
+});
+
+test("decisionSkip and decisionTask: the free pre-filter, and the run's thinking as data", () => {
+	const user = { role: "user", content: "어느 쪽이 좋을까?", timestamp: 1 };
+	const reply = (text: string): any => ({ role: "assistant", content: [{ type: "text", text }], timestamp: 150 });
+	const gate = (customType: string): any => ({ role: "custom", customType, content: "x", display: true, timestamp: 150 });
+	const asks = reply("Two options.\n\n1번으로 할까요?");
+	assert.equal(decisionSkip([user, asks] as any), undefined);
+	assert.equal(decisionSkip([user, reply("Shall I?\n\nDone.")] as any), "no question");
+	assert.equal(decisionSkip([user, { role: "assistant", content: [{ type: "toolCall", id: "t", name: "read", arguments: {} }], timestamp: 150 }] as any), "no reply");
+	for (const t of ["review-notes", "review-gate", "plan-checks"]) assert.equal(decisionSkip([user, gate(t), asks] as any), "after a gate message", t);
+	assert.equal(decisionSkip([user, gate("plan-first"), asks] as any), undefined, "plan-first is not a gate message");
+
+	const messages: any[] = [
+		user,
+		{ role: "assistant", content: [{ type: "thinking", thinking: "OLD THOUGHT" }], timestamp: 50 },
+		{ role: "assistant", content: [{ type: "thinking", thinking: "first block" }, { type: "thinking", thinking: "second block" }, { type: "text", text: "Two options.\n\n1번으로 할까요?" }], timestamp: 150 },
+	];
+	const task = decisionTask({ messages, since: 100 });
+	assert.doesNotMatch(task, /OLD THOUGHT/, "thinking from before the run is left out");
+	assert.match(task, /<reasoning-([0-9a-f]{8})>\nfirst block\n\nsecond block\n<\/reasoning-\1>/);
+	assert.match(task, /<user-messages-([0-9a-f]{8})>\nLatest user message:\n어느 쪽이 좋을까\?\n<\/user-messages-\1>/);
+	assert.match(task, /<reply-([0-9a-f]{8})>\nTwo options\.\n\n1번으로 할까요\?\n<\/reply-\1>/);
+	assert.match(decisionTask({ messages: [user, asks], since: 100 }), /<reasoning-[0-9a-f]{8}>\n\(none\)\n/);
+});
+
+test("a no-change reply that asks the user something gets one decision check, shown without a turn", async () => {
+	const savedArgv1 = process.argv[1];
+	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "review-gate-agent-"));
+	const repo = mkdtempSync(join(tmpdir(), "review-gate-repo-"));
+	const run = (...args: string[]) => execFileSync("git", args, { cwd: repo });
+	run("init", "-q");
+	writeFileSync(join(repo, "a.txt"), "1\n");
+	run("add", ".");
+	run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+
+	const handlers: Record<string, any> = {};
+	const logged: any[] = [];
+	reviewGate({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, handler: any) => (handlers[event] = handler), registerCommand: () => {}, registerTool: () => {} } as any);
+	const statuses: Record<string, string | undefined> = {};
+	let esc: ((data: string) => any) | undefined;
+	const ui = { theme: { fg: (_color: string, text: string) => text }, setStatus: (key: string, text?: string) => (statuses[key] = text), setWidget: () => {}, notify: () => {}, onTerminalInput: (h: any) => ((esc = h), () => (esc = undefined)) };
+	let queued = false;
+	const asked: any[] = [];
+	const gapsCall = (args: any, extra: any = {}) => ({ type: "toolCall", id: "g", name: "gaps", arguments: args, ...extra });
+	const item = { gap: "샌드박스를 끈 경우가 빠졌습니다", evidence: "Detecting that failure is tricky" };
+	let completion: (options: any) => any = () => ({ role: "assistant", stopReason: "toolUse", content: [gapsCall({ items: [item] })], usage: { cost: { total: 0.001 } } });
+	const modelRegistry = {
+		find: (provider: string, id: string) => ({ provider, id }),
+		hasConfiguredAuth: () => true,
+		complete: async (model: any, context: any, options: any) => (asked.push({ model, context, options }), completion(options)),
+	};
+	const ctx = { mode: "tui", cwd: repo, ui, modelRegistry, sessionManager: { getBranch: () => [] }, hasPendingMessages: () => queued };
+	const later = Date.now() + 3_600_000;
+	const turn = (ts: number, reply: string, between: any[] = []) => [
+		{ role: "user", content: "어느 쪽이 좋을까?", timestamp: ts },
+		...between,
+		{ role: "assistant", content: [{ type: "thinking", thinking: "Detecting that failure is tricky" }], timestamp: later },
+		{ role: "assistant", content: [{ type: "text", text: `두 가지가 있습니다.\n\n${reply}` }], timestamp: later },
+	];
+	const assistant = { role: "assistant", content: [{ type: "text", text: "done" }] };
+	const settle = (contextMessages: any[]) => handlers.agent_before_settle({ entries: [], outcome: "completed", context: { llmMessages: [assistant], contextMessages } }, ctx);
+
+	try {
+		handlers.before_agent_start({}, ctx);
+		const first = turn(1, "1번으로 할까요?");
+		const shown = await settle(first);
+		assert.equal(shown.continue, undefined, "no turn runs on it");
+		assert.deepEqual(shown.entries.map((e: any) => [e.type, e.customType, e.display]), [["custom_message", "decision-gaps", true]]);
+		assert.match(shown.entries[0].content, /샌드박스를 끈 경우[\s\S]*Evidence: Detecting/);
+		assert.equal(asked.length, 1);
+		assert.equal(asked[0].model.id, "gpt-6.1-terra");
+		assert.equal(asked[0].context.tools[0].name, "gaps");
+		assert.equal(asked[0].context.tools[0], GAPS);
+		assert.equal(asked[0].context.systemPrompt, DECISION);
+		assert.equal(asked[0].options.reasoningEffort, "low");
+		assert.equal(asked[0].options.cacheRetention, "none");
+		assert.equal(asked[0].options.maxRetries, 1);
+		const task = asked[0].context.messages[0].content;
+		for (const t of ["Detecting that failure is tricky", "어느 쪽이 좋을까?", "1번으로 할까요?"]) assert.ok(task.includes(t), t);
+		assert.equal(logged.at(-1).customType, "decision-check");
+		assert.equal(logged.at(-1).items.length, 1);
+		assert.equal(logged.at(-1).error, undefined);
+		assert.equal(statuses.decision, undefined, "the status is cleared");
+		assert.equal(esc, undefined, "the listener is gone");
+
+		assert.equal(await settle(first), undefined, "once per user message");
+		assert.equal(asked.length, 1);
+
+		assert.equal(await settle(turn(2, "Done?\n\nAll set.")), undefined, "no question in the last paragraph");
+		assert.equal(asked.length, 1);
+		let ts = 3;
+		for (const t of ["review-notes", "review-gate", "plan-checks"]) {
+			assert.equal(await settle(turn(ts++, "1번으로 할까요?", [{ role: "custom", customType: t, content: "x", display: true, timestamp: later }])), undefined, t);
+			assert.equal(asked.length, 1, t);
+		}
+
+		completion = () => ({ role: "assistant", stopReason: "toolUse", content: [gapsCall({ items: [] })] });
+		assert.equal(await settle(turn(ts++, "1번?")), undefined, "no gaps, nothing shown");
+		assert.deepEqual(logged.at(-1).items, []);
+		assert.equal(logged.at(-1).error, undefined);
+
+		const malformed = [
+			[gapsCall({ items: [item] }), gapsCall({ items: [item] })],
+			[{ type: "toolCall", id: "v", name: "verdict", arguments: { items: [item] } }],
+			[gapsCall({ items: [item, item, item, item] })],
+			[gapsCall({ items: [{ gap: "x" }] })],
+			[gapsCall({ items: [item] }, { argumentsError: true })],
+		];
+		for (const content of malformed) {
+			completion = () => ({ role: "assistant", stopReason: "toolUse", content });
+			const calls = asked.length;
+			assert.equal(await settle(turn(ts++, "1번?")), undefined);
+			assert.equal(asked.length, calls + 1);
+			assert.equal(logged.at(-1).error, "malformed");
+			assert.equal(logged.at(-1).items, undefined);
+		}
+
+		completion = () => {
+			throw new Error("openai down");
+		};
+		assert.equal(await settle(turn(ts++, "1번?")), undefined);
+		assert.equal(logged.at(-1).error, "openai down");
+
+		// A message queued meanwhile, or Esc, stops the check.
+		const hang = (options: any) => new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+		completion = hang;
+		let calls = asked.length;
+		let t0 = Date.now();
+		const q = settle(turn(ts++, "1번?"));
+		await until(() => asked.length === calls + 1);
+		queued = true;
+		assert.equal(await q, undefined);
+		assert.ok(Date.now() - t0 < 5000, "a queued message stops it promptly");
+		assert.equal(logged.at(-1).error, "stopped");
+		queued = false;
+
+		calls = asked.length;
+		t0 = Date.now();
+		const e = settle(turn(ts++, "1번?"));
+		await until(() => asked.length === calls + 1 && esc !== undefined);
+		assert.equal(esc!("\x1b"), undefined, "pi's own Esc runs too");
+		assert.equal(await e, undefined);
+		assert.ok(Date.now() - t0 < 5000);
+		assert.equal(logged.at(-1).error, "stopped");
+
+		calls = asked.length;
+		queued = true;
+		assert.equal(await settle(turn(ts++, "1번?")), undefined, "queued at the start");
+		assert.equal(asked.length, calls);
+		queued = false;
+
+		// A run that changed something gets the review instead.
+		const dir = mkdtempSync(join(tmpdir(), "fake-pi-"));
+		const log = join(dir, "tasks.log");
+		process.argv[1] = join(dir, "pi.mjs");
+		writeFileSync(
+			process.argv[1],
+			`import { appendFileSync } from "node:fs";
+			appendFileSync(${JSON.stringify(log)}, "task\\n---\\n");
+			console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ALLOW: fine" }], stopReason: "stop" } }));`,
+		);
+		completion = () => ({ role: "assistant", stopReason: "toolUse", content: [gapsCall({ items: [item] })] });
+		calls = asked.length;
+		writeFileSync(join(repo, "a.txt"), "2\n");
+		assert.equal(await settle(turn(ts++, "1번으로 할까요?")), undefined);
+		assert.equal(readFileSync(log, "utf8").split("\n---\n").length - 1, 1, "the review ran");
+		assert.equal(asked.length, calls, "and no gaps call");
+	} finally {
+		process.argv[1] = savedArgv1!;
+	}
+});
+
+test("checkDecision without openai auth makes no call and says why", async () => {
+	const registry = { find: () => ({}), hasConfiguredAuth: () => false, complete: async () => assert.fail("no call") };
+	assert.deepEqual(await checkDecision(registry as any, "task", new AbortController().signal), { error: "no openai/gpt-6.1-terra auth" });
 });

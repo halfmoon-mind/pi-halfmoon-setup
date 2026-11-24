@@ -32,6 +32,7 @@ test("parsePlan reads each checkbox line's files and check, and the success crit
 		criteria: ["npm test", "! git check-ignore -q x"],
 		requirements: [],
 		sources: [],
+		assumptions: [],
 	});
 });
 
@@ -76,6 +77,37 @@ test("Sources and Requirements: each requirement maps to an existing step or is 
 		["R5 is unconfirmed: ask the user, then end it with - step: N or - out: <their answer>"],
 		"an open question is not an agreed out, which the review gate would skip",
 	);
+});
+
+test("Assumptions: checked and agreed lines pass, unchecked and malformed ones are named", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "checks-"));
+	writeFileSync(join(cwd, "a.ts"), "");
+	const clean = "- [ ] 1. a - files: a.ts - check: `true`\n## Success criteria\n- `true`\n";
+	const ASSUME = [
+		"## Assumptions",
+		"Prose about what the plan relies on.",
+		"- A1. x — checked: a.ts:3, <pi>/core/y.js:80-82",
+		"- A2. y - checked: a.ts:1",
+		"- A3. z — unchecked: no API found",
+		"- A4. w",
+		"- A5. v — checked: a.ts",
+		"- A6. u — agreed: user, 2026-11-24",
+		"- not an A line",
+	].join("\n");
+	assert.deepEqual(parsePlan(clean + ASSUME).assumptions, [
+		{ id: "A1", checked: ["a.ts:3", "<pi>/core/y.js:80-82"] },
+		{ id: "A2", checked: ["a.ts:1"] },
+		{ id: "A3", checked: [], unchecked: "no API found" },
+		{ id: "A4", checked: [] },
+		{ id: "A5", checked: [] },
+		{ id: "A6", checked: [], agreed: "user, 2026-11-24" },
+	]);
+	assert.deepEqual(lintPlan(cwd, clean + ASSUME), [
+		"A3 is unchecked (no API found): check it against the code and end it — checked: <file:line>, or ask the user and end it — agreed: <who, date> or change the plan",
+		"A4 must end — checked: <file:line>[, …], — agreed: <who, date> or — unchecked: <why>",
+		"A5 must end — checked: <file:line>[, …], — agreed: <who, date> or — unchecked: <why>",
+	]);
+	assert.deepEqual(lintPlan(cwd, clean), [], "the section is optional");
 });
 
 test("gated: tui always, print only under PI_EVAL=1, json and rpc never", () => {

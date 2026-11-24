@@ -14,6 +14,7 @@ tasks/<id>/solution/       the reference fix: src files overlaying repo/, checke
 gate-eval.ts              the review gate's own eval, no implementer-agent run; writes gate-results/
 tasks/<id>/omit/<name>/   the solution with one stated rule dropped, overlaying solution/; used only by gate-eval.ts
 tasks/<id>/gate-plan.md   the gate eval's behavior-only plan, used instead of plan.md by gate-eval.ts
+followup-eval.ts          the decision check's eval on your own session logs; writes only under <agent dir>/followup-eval/
 ```
 
 ## Check the fixtures
@@ -64,3 +65,17 @@ node --import ./extensions/test-hooks.ts bench/agent/gate-eval.ts --report [--la
 `--dry` makes no model calls: per (task, variant), the visible tests pass, the plan lints clean, `full` passes the hidden test and each omission fails it. A real run writes `gate-results/<label>/<id>__<variant>__r<n>.json` with the decision (`NONE` when the review has no verdict line; there is no extraction fallback), reason, model, cost, duration, the review, the reviewer's attempted bash tool calls (`bash`) and whether the repository's snapshot changed during the review (`repoChanged`, by the gate's own `snapshot`; ignored untracked files are excluded, and an unchanged snapshot does not prove no writes occurred); a result already there is skipped, and a failed reviewer run writes nothing and keeps its temp dir. `--report` gives per label the recall (BLOCKs over omission runs, `NONE` counting as not BLOCK) and the false-block rate (BLOCKs over `full` runs), then BLOCKs per task and variant. A BLOCK for some other reason still counts in the report, so read the reasons.
 
 The reviewer is this checkout's `agents/reviewer.md`, unless `<agent dir>/agents/reviewer.md` overrides it, run through `pi` on PATH (put `~/.pi/agent/bin` first). Real runs are manual and billed: one reviewer invocation per (task, variant, repeat), so 12 × N, each up to 10 minutes and possibly several inference and tool turns.
+
+## Follow-up eval
+
+Whether the review gate's decision check (a no-change reply that asks the user something gets one `gpt-6.1-terra` call for what it leaves out) names what the user then asks about. It mines the session logs under `<agent dir>/sessions` (temp-run dirs skipped) for user messages after a reply: a positive is a follow-up asking whether something was considered (200 characters or less, a `?`, and a word such as 고려, 빠뜨, 포함, `왜 … 안`, `considered`, `what about`); a negative is a plain go-ahead of 20 characters or less (진행, ㄱㄱ, 네, ok, `1번`). The turn before it is eligible when it passes the gate's free pre-filter (`decisionSkip`: a reply with a `?` in its last paragraph, no review, triage or plan-check message after the user's), made no `edit` or `write` call, and showed no decision check. Each fixture is the turn as the check sees it: the last three user messages, the run's thinking and the reply.
+
+```bash
+node --import ./extensions/test-hooks.ts bench/agent/followup-eval.ts --dry
+node --import ./extensions/test-hooks.ts bench/agent/followup-eval.ts --label <name>
+node --import ./extensions/test-hooks.ts bench/agent/followup-eval.ts --report [--label <name>]
+```
+
+`--dry` makes no model call and writes nothing: it counts positives and negatives by why each is or is not eligible, so `no question` is how many follow-ups the `?` pre-filter misses. `--label` runs the check (`checkDecision`, the gate's own call) on each eligible fixture without a result, and for a positive with items one grading call asking whether any gap raises the follow-up's concern. `--report` gives per label the recall (positives whose gaps cover the follow-up, a positive with no items counting as missed) and the noise (negatives with at least one item).
+
+Fixtures and results are your private conversations, so they are kept under `<agent dir>/followup-eval/<label>/<id>.json` and never in the repository. Real runs are manual and billed: one terra call per eligible fixture plus one grading call per positive with items.

@@ -12,6 +12,7 @@ Check only what would stop a capable developer or make the result wrong:
 - Every step has a starting point: a file, a function, or a pattern to follow
 - Steps do not contradict each other or the requirements
 - When the plan has `## Sources`, read them (or the text the caller passed for one you cannot open): a requirement in a source that is missing from `## Requirements`, misquoted, or mapped to a step that does not do it is a blocker; fix it in place by adding or correcting the R line and the step
+- For each `## Assumptions` line ending `— checked:`, open the cited `file:line` and confirm it supports the assumption. For `— agreed:`, check who/date and that the user accepted what the code cannot show; do not require a code citation for it. An unchecked or malformed ending, a wrong or missing checked citation, an unsupported claim of user agreement, or something the plan relies on that is not listed (a decided item the caller passed, an API or behavior a step builds on), is a blocker: fix it in place by correcting the evidence or adding the line, ending it ` — unchecked: <why>` when neither the code nor user agreement supports it.
 - Success criteria exist and can be checked by running something
 - Each checkbox step line ends with ``- files: … - check: `cmd` ``, and success criteria are `` - `cmd` `` lines; fix it in place when not
 

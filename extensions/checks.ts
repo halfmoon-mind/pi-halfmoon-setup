@@ -18,12 +18,15 @@ export const gated = (mode: string) => mode === "tui" || (mode === "print" && pr
 export type Step = { n: number; done: boolean; files: string[]; check?: string };
 /** A `## Requirements` line: `- R1. "<quote>" — src: <where> - step: 2, 3` or `… - out: <reason, who agreed>`. */
 export type Requirement = { id: string; steps: number[]; out?: string };
+/** An `## Assumptions` line: `- A1. <assumption> — checked: <file:line>[, …]`, `… — agreed: <who, date>` or `… — unchecked: <why>`. No valid ending (or a citation that is not file:line) leaves all empty. */
+export type Assumption = { id: string; checked: string[]; agreed?: string; unchecked?: string };
 
-export function parsePlan(text: string): { steps: Step[]; criteria: string[]; requirements: Requirement[]; sources: string[] } {
+export function parsePlan(text: string): { steps: Step[]; criteria: string[]; requirements: Requirement[]; sources: string[]; assumptions: Assumption[] } {
 	const steps: Step[] = [];
 	const criteria: string[] = [];
 	const requirements: Requirement[] = [];
 	const sources: string[] = [];
+	const assumptions: Assumption[] = [];
 	let section = "";
 	for (const line of text.split("\n")) {
 		if (/^#/.test(line)) section = line.match(/^##\s+(.*?)\s*$/)?.[1].toLowerCase() ?? "";
@@ -51,14 +54,20 @@ export function parsePlan(text: string): { steps: Step[]; criteria: string[]; re
 			const ns = line.match(/ - step: (\d+(?:\s*,\s*\d+)*)\s*$/)?.[1];
 			const out = line.match(/ - out: (.+?)\s*$/)?.[1];
 			requirements.push({ id, steps: ns ? ns.split(",").map(Number) : [], ...(out ? { out } : {}) });
+		} else if (section === "assumptions") {
+			const id = line.match(/^\s*- (A\d+)\. /)?.[1];
+			if (!id) continue;
+			const m = line.match(/\s[—-]\s+(checked|agreed|unchecked):\s*(.+?)\s*$/);
+			const cites = m?.[1] === "checked" ? m[2]!.split(",").map((s) => s.trim()) : [];
+			assumptions.push({ id, checked: cites.every((c) => /^\S+:\d+(?:-\d+)?$/.test(c)) ? cites : [], ...(m?.[1] === "agreed" ? { agreed: m[2] } : {}), ...(m?.[1] === "unchecked" ? { unchecked: m[2] } : {}) });
 		}
 	}
-	return { steps, criteria, requirements, sources };
+	return { steps, criteria, requirements, sources, assumptions };
 }
 
 /** What keeps a plan from the step format, or [] when it is clean. */
 export function lintPlan(cwd: string, text: string): string[] {
-	const { steps, criteria, requirements, sources } = parsePlan(text);
+	const { steps, criteria, requirements, sources, assumptions } = parsePlan(text);
 	const problems: string[] = [];
 	if (!steps.length) problems.push("no steps: each step is one line like `- [ ] 1. <what> - files: a.ts - check: `<command>``");
 	for (const s of steps) {
@@ -77,6 +86,11 @@ export function lintPlan(cwd: string, text: string): string[] {
 		// `out:` means the user agreed, and the review gate skips it; an open question is not that yet.
 		if (r.out && /\bunconfirmed\b/i.test(r.out)) problems.push(`${r.id} is unconfirmed: ask the user, then end it with - step: N or - out: <their answer>`);
 		for (const n of r.steps) if (!numbers.has(n)) problems.push(`${r.id} maps to step ${n}, which does not exist`);
+	}
+	// Optional: the bench fixture plans have none. An unchecked one is what the plan builds on without knowing, so it is refused like `unconfirmed`.
+	for (const a of assumptions) {
+		if (a.unchecked !== undefined) problems.push(`${a.id} is unchecked (${a.unchecked}): check it against the code and end it — checked: <file:line>, or ask the user and end it — agreed: <who, date> or change the plan`);
+		else if (!a.checked.length && a.agreed === undefined) problems.push(`${a.id} must end — checked: <file:line>[, …], — agreed: <who, date> or — unchecked: <why>`);
 	}
 	return problems;
 }
