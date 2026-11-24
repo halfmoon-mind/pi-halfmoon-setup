@@ -29,21 +29,24 @@
 
 ### 1. 준비 및 설치
 
-`pi`와 Claude Code의 `claude` 명령어가 PATH에 있어야 하고, PDF를 읽으려면 poppler, Word 파일을 읽으려면 pandoc이 필요합니다(`brew install poppler pandoc`). PowerPoint 슬라이드 이미지에는 LibreOffice가 필요합니다(`brew install --cask libreoffice`). 없으면 해당 슬라이드에 들어 있는 그림 원본만 보냅니다. bash 샌드박스에는 ripgrep이 필요합니다(`brew install ripgrep`, Linux에서는 bubblewrap과 socat도: `apt-get install bubblewrap socat ripgrep`). 이 저장소는 독립 실행 앱이 아니라 pi에 로드하는 패키지입니다.
+`pi`와 Claude Code의 `claude` 명령어가 PATH에 있어야 합니다. 이 저장소는 독립 실행 앱이 아니라 pi에 로드하는 패키지입니다. macOS에서는 `setup.sh`가 나머지를 확인하고 없는 것만 설치하거나 로그인하므로, 다시 실행해도 바뀌는 것이 없습니다.
 
 ```bash
-pi install git:github.com/halfmoon-mind/pi-halfmoon-setup
-claude auth login
+curl -fsSL https://raw.githubusercontent.com/halfmoon-mind/pi-halfmoon-setup/main/setup.sh | bash
+# 또는 클론한 저장소에서:
+./setup.sh
 ```
 
-로컬 체크아웃을 사용하려면 의존성을 먼저 설치한 뒤 체크아웃을 설치합니다(pi는 로컬 소스의 의존성을 설치하지 않습니다). 수정 후 pi에서 `/reload`로 다시 로드할 수 있습니다.
+Homebrew로 PDF를 읽는 poppler, Word 파일을 읽는 pandoc, bash 샌드박스용 ripgrep, PowerPoint 슬라이드 이미지를 만드는 LibreOffice를 설치하고(LibreOffice가 없으면 해당 슬라이드에 들어 있는 그림 원본만 보냅니다), 이 패키지를 설치하며(`pi install git:github.com/halfmoon-mind/pi-halfmoon-setup`), `claude auth login`과 `pi auth login openai`를 실행하고, `~/.pi/agent/settings.json`에 아직 없는 키만 `"quietStartup": "header"`, `"hideThinkingBlock": true`, `"steeringMode": "all"`, `"followUpMode": "all"`로 추가합니다. Linux에서는 `apt-get install poppler-utils pandoc ripgrep bubblewrap socat libreoffice`부터 할 일을 출력만 합니다.
+
+로컬 체크아웃을 사용하려면 의존성을 먼저 설치한 뒤 체크아웃을 설치합니다(pi는 로컬 소스의 의존성을 설치하지 않습니다). `setup.sh`보다 먼저 설치하면 `setup.sh`가 `pi list`에서 체크아웃을 찾아 그대로 둡니다. 수정 후 pi에서 `/reload`로 다시 로드할 수 있습니다.
 
 ```bash
 cd ~/projects/pi-halfmoon-setup && npm ci
 pi install ~/projects/pi-halfmoon-setup
 ```
 
-`reviewer`·`plan-reviewer`·`deep-worker` 에이전트와 리뷰 게이트는 `openai` 프로바이더를 사용합니다. 해당 프로바이더의 인증도 준비해야 합니다. 환경변수로 설정하는 경우:
+`reviewer`·`plan-reviewer`·`deep-worker` 에이전트와 리뷰 게이트는 `openai` 프로바이더를 사용합니다. ChatGPT 구독으로 로그인할 수 있습니다. `setup.sh`가 `pi auth login openai`로 로그인하며, pi에서 `/login`을 실행해도 됩니다. API 키를 쓰려면:
 
 ```bash
 export OPENAI_API_KEY="<your-api-key>"
@@ -132,6 +135,7 @@ Claude 요청은 `claude -p`를 통해 실행됩니다. 따라서 Claude Code의
 ## 저장소 구조
 
 ```text
+setup.sh                    패키지에 필요한 것을 확인하고 없는 것만 설치·로그인
 agents/                     역할별 프롬프트와 모델 설정
 prompts/                    슬래시 명령어용 워크플로 템플릿
 extensions/

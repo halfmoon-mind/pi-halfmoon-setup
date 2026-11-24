@@ -29,21 +29,24 @@ Use the same model router, subagents, and workflow prompts on every machine. `ro
 
 ### 1. Prerequisites and install
 
-`pi` and Claude Code's `claude` command must be on your PATH, poppler for reading PDFs and pandoc for Word files (`brew install poppler pandoc`), LibreOffice for PowerPoint slide images (`brew install --cask libreoffice`; without it, those slides come with their embedded pictures only), and ripgrep for the bash sandbox (`brew install ripgrep`; on Linux also bubblewrap and socat: `apt-get install bubblewrap socat ripgrep`). This repository is not a standalone app; it is a package that pi loads.
+`pi` and Claude Code's `claude` command must be on your PATH; this repository is not a standalone app but a package that pi loads. On macOS, `setup.sh` checks the rest and installs or signs in to only what is missing, so running it again changes nothing:
 
 ```bash
-pi install git:github.com/halfmoon-mind/pi-halfmoon-setup
-claude auth login
+curl -fsSL https://raw.githubusercontent.com/halfmoon-mind/pi-halfmoon-setup/main/setup.sh | bash
+# or, from a clone:
+./setup.sh
 ```
 
-To use a local checkout instead, install its dependency and then the checkout (pi does not install dependencies for a local source). After editing, run `/reload` in pi to load the changes.
+It installs with Homebrew poppler for reading PDFs, pandoc for Word files, ripgrep for the bash sandbox, and LibreOffice for PowerPoint slide images (without it, those slides come with their embedded pictures only); installs this package (`pi install git:github.com/halfmoon-mind/pi-halfmoon-setup`); runs `claude auth login` and `pi auth login openai`; and adds `"quietStartup": "header"`, `"hideThinkingBlock": true`, `"steeringMode": "all"` and `"followUpMode": "all"` to `~/.pi/agent/settings.json` where those keys are not set yet. On Linux it prints the steps instead, starting with `apt-get install poppler-utils pandoc ripgrep bubblewrap socat libreoffice`.
+
+To use a local checkout instead, install its dependency and then the checkout (pi does not install dependencies for a local source). Do this before running `setup.sh`, which then finds the checkout in `pi list`. After editing, run `/reload` in pi to load the changes.
 
 ```bash
 cd ~/projects/pi-halfmoon-setup && npm ci
 pi install ~/projects/pi-halfmoon-setup
 ```
 
-The `reviewer`, `plan-reviewer`, and `deep-worker` agents and the review gate use the `openai` provider, so set up its authentication too. With an environment variable:
+The `reviewer`, `plan-reviewer`, and `deep-worker` agents and the review gate use the `openai` provider. A ChatGPT subscription works: `setup.sh` signs in with `pi auth login openai`, or run `/login` in pi. To use an API key instead:
 
 ```bash
 export OPENAI_API_KEY="<your-api-key>"
@@ -132,6 +135,7 @@ Claude requests run through `claude -p`, so Claude Code's user settings, hooks, 
 ## Repository layout
 
 ```text
+setup.sh                    Installs and signs in to what the package needs, skipping what is ready
 agents/                     Role prompts and model settings
 prompts/                    Workflow templates for slash commands
 extensions/
