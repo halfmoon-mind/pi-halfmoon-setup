@@ -4,7 +4,7 @@
 // grep, find, ls, write, edit, handoff's plan) are checked here against the same paths. sudo, git push,
 // rm -r and .env writes ask first; with no UI they are blocked. Fails closed: until the sandbox is up,
 // or when it cannot start, bash and those tools are blocked. PI_SANDBOX=off, or a confirmed /sandbox off (which subagents and review gates
-// started afterwards inherit, read-only ones excepted), turns all of it off; /sandbox on turns it back on, starting the sandbox if it is not up.
+// started afterwards inherit, read-only ones excepted), turns all of it off but those confirmations; /sandbox on turns it back on, starting the sandbox if it is not up.
 // PI_SANDBOX_READONLY=1 (subagent/run.ts sets it for an agent with `sandbox: read-only`) makes only the temp dirs writable, ignores
 // sandbox.json's allowWrite and PI_SANDBOX=off, and turns escalation and the host rating off; a start failure still blocks.
 // A blocked bash command is rated by openai/gpt-6.1-terra: low re-runs unsandboxed, high asks (no UI: denied) and the host rating; PI_SANDBOX_ESCALATE=off.
@@ -358,16 +358,17 @@ export default function (pi: ExtensionAPI) {
 	off = !readOnly && process.env.PI_SANDBOX === "off";
 	(globalThis as any)[LIVE] = run;
 	pi.on("tool_call", async (event, ctx) => {
-		if (off) return;
-		if (event.toolName === "powershell") return { block: true, reason: "sandbox: powershell runs outside the OS sandbox; use bash" };
-		if (GATED.has(event.toolName)) {
-			let reason: string | undefined;
-			try {
-				reason = (await notReady()) ?? blocked(event.toolName, event.input, ctx.cwd);
-			} catch (e) {
-				reason = `sandbox: ${(e as Error).message}`; // a path that cannot be resolved is not allowed
+		if (!off) {
+			if (event.toolName === "powershell") return { block: true, reason: "sandbox: powershell runs outside the OS sandbox; use bash" };
+			if (GATED.has(event.toolName)) {
+				let reason: string | undefined;
+				try {
+					reason = (await notReady()) ?? blocked(event.toolName, event.input, ctx.cwd);
+				} catch (e) {
+					reason = `sandbox: ${(e as Error).message}`; // a path that cannot be resolved is not allowed
+				}
+				if (reason) return { block: true, reason };
 			}
-			if (reason) return { block: true, reason };
 		}
 		const r = risky(event.toolName, event.input, ctx.cwd);
 		if (!r) return;

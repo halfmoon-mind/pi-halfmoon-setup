@@ -30,7 +30,7 @@ flowchart LR
 
 | Feature | What it does |
 |---|---|
-| **Per-session routing** | Main session on Opus; logic-heavy (`deep`) and very hard work on Fable; thinking level to match |
+| **Per-session routing** | Main session on Opus, quick questions on Sonnet; logic-heavy (`deep`) and very hard work on Fable; thinking level to match |
 | **Haiku classifier** | Claude Haiku picks the tier and thinking through your `claude` login; falls back to Opus |
 | **Role-based subagents** | Explore, plan, implement, and review in isolated contexts |
 | **Workflow commands** | `/implement`, `/scout-and-plan`, `/implement-and-review`, `/deep` |
@@ -130,14 +130,14 @@ Type a prompt command followed by the task:
 | `/implement-and-review` | worker → reviewer → worker | Implementation, review, and fixes for Critical issues |
 | `/deep` | deep-worker (→ worker if it escalates) | One logic-heavy goal on GPT-6.1 Sol, handed to the worker when evidence cannot settle a decision |
 
-The prompts use the `subagent` tool's `chain` mode, passing each step's output to the next with `{previous}`. The tool also supports a single agent (`agent` + `task`) and parallel runs (`tasks`).
+`/scout-and-plan`, `/implement` and `/implement-and-review` use the `subagent` tool's `chain` mode, passing each step's output to the next with `{previous}`; `/deep` is one `deep-worker` call, then a `worker` call if its output starts with `ESCALATE:`. The tool also supports a single agent (`agent` + `task`) and parallel runs (`tasks`).
 
 Collapsed, a subagent run is one line per agent: its current tool call while running, the first line of its answer (or error) once done, and `waiting` for chain steps not started yet. `Ctrl+O` shows each task, its tool calls, and its full output.
 
 ### Workflow
 
-- **Plan first and handoff** — a change bigger than a quick fix gets a reviewed plan in `docs/plans/` first; the `handoff` tool runs its build here through a `worker` subagent, or in a new session when this one is full.
-- **Review gate** — before pi stops, the `reviewer` agent reviews the prompt's changes and sends blocking issues back to the model. `/review-gate off` turns it off.
+- **Plan first and handoff** — a change bigger than a quick fix first goes through `planner` and `plan-reviewer` to a plan in `docs/plans/<name>.md`; the `handoff` tool runs its build here through a `worker` subagent, or in a new session when this one is full.
+- **Review gate** — before pi stops, the `reviewer` agent reviews the prompt's changes and, on a `BLOCK`, sends the issues back to the model. `/review-gate on` and `/review-gate off` turn it on and off.
 
 See [docs/workflow.md](docs/workflow.md) for details.
 
@@ -162,7 +162,7 @@ See [docs/sandbox.md](docs/sandbox.md) for the rules, the access dialog, escalat
 
 ## Model selection
 
-`router/auto` classifies the first user message into a tier and sets thinking from how hard the request is:
+`router/auto` classifies the first user message into a tier; `standard` and `complex` also take the classifier's thinking level, and the other tiers run at `medium`:
 
 | Tier | Model |
 |---|---|
@@ -221,7 +221,7 @@ extensions/
   router.ts                 router/auto: classification, tiers and routing
   router.test.ts            Router tests
   sandbox/                  OS sandbox for bash, and the same path checks for pi's file tools
-  footer.ts                 Two-line footer with the routed tier and model
+  footer.ts                 Two-line footer with the routed tier and model, and the session ID's first 13 characters
   review-gate.ts            Stop-time review of each prompt's changes
   handoff.ts                Plan-first note, the handoff tool, and /handoff
   checks.ts                 The plan step format: parse, lint, and run a check
@@ -229,6 +229,9 @@ extensions/
   office-read.ts            read for .docx, .xlsx and .pptx: text plus images where needed
   tab-follow-up.ts          Tab queues a follow-up while the agent runs
   timing.ts                 Live prompt timer in the footer and a timing line after each prompt
+  bash-times.ts             Typical bash durations per command, which timing.ts shows
+  compact-tools.ts          Collapsed one-line rendering of read, grep, find, ls and bash calls
+  startup.ts                Startup warnings and the workflow-command line
   test-hooks.ts             Loads pi's packages in tests the way pi does
   subagent/                 Subagent runs and agent discovery
   pi-claude-cli/            Claude CLI provider
@@ -260,13 +263,13 @@ pi's packages load from the installed pi (`~/.pi/agent/install`), and fake proce
 
 </details>
 
-GitHub Actions runs the same tests on every push and PR, and weekly against the newest pi from npm, so a pi update that breaks this package shows up right away.
+GitHub Actions runs the same tests on every push to main and every PR, and weekly against the newest pi from npm, so a pi update that breaks this package shows up right away.
 
 ### Eval set
 
 `PI_EVAL=1` gates print mode (`pi -p`) like an interactive session: the plan-first note, `handoff` (which then never moves the build to a new session), plan checks, and the review gate. Subagents run in json mode and are never gated.
 
-`bench/agent/` holds eight tasks that measure pass rate and false-done rate per model, with and without the gate:
+`bench/agent/` holds 14 tasks that measure pass rate and false-done rate per model, with and without the gate:
 
 ```bash
 node --import ./extensions/test-hooks.ts bench/agent/run.ts --dry

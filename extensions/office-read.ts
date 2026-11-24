@@ -312,7 +312,9 @@ export function slideNeedsImage(slide: string): boolean {
 	if (/<p:(pic|cxnSp)\b|drawingml\/2006\/diagram/.test(slide)) return true;
 	return [...slide.matchAll(/<p:sp\b[\s\S]*?<\/p:sp>/g)].some(([sp]) => {
 		if (/<p:ph\b|txBox="1"/.test(sp)) return false;
-		return /<a:prstGeom prst="(?!rect")|<a:custGeom|<a:solidFill>/.test(sp.split("<p:txBody>")[0]);
+		const head = sp.split("<p:txBody>")[0];
+		// A theme fill (fillRef idx 1+) counts unless the shape's own fill, not its outline's, is noFill.
+		return /<a:prstGeom prst="(?!rect")|<a:custGeom|<a:solidFill>/.test(head) || (/<a:fillRef idx="[1-9]/.test(head) && !/<a:noFill\/>/.test(head.replace(/<a:ln\b[\s\S]*?<\/a:ln>/g, "")));
 	});
 }
 

@@ -16,9 +16,9 @@ The main session never runs on GPT. Opus is the default; a `quick` question runs
 
 A Claude `-*` setting picks the newest numbered version of that family in the registered model catalog. Dated snapshots are excluded, so the actual model version depends on pi's catalog.
 
-Claude Haiku classifies through `claude -p` with the same login as pi-claude-cli, so it counts against your subscription limits. It takes about 4 s (p50 3.8 s) and reads up to 16,000 characters of the user message. A missing `claude`, an error, a 30 s timeout, or an answer outside the schema makes the router use `complex`. This is a **fallback for failed classification**; it does not switch to another provider when the chosen model fails to authenticate or respond.
+Claude Haiku classifies through `claude -p` with the same login as pi-claude-cli, so it counts against your subscription limits. It takes about 4 s (p50 3.8 s) and reads up to 16,000 characters of the user message. A missing `claude`, an error, a 30 s timeout, or an answer outside the schema makes the router use `complex`, and a quick session that hits one stays on `complex` for good. This is a **fallback for failed classification**; it does not switch to another provider when the chosen model fails to authenticate or respond.
 
-The same classification picks the thinking level, `low`, `medium`, `high`, or `xhigh`, and the session runs at it. A Fable session (`deep` or `complex-high`) runs at `medium` instead, so `xhigh` only reaches a `standard` session. pi's level goes to the `claude` CLI's `--effort` level of the same name for every Claude model. If you pick a thinking level yourself in pi, yours is used for the rest of the session. When the classifier cannot answer, your level is used from the start.
+The same classification picks the thinking level, `low`, `medium`, `high`, or `xhigh`; `standard` and `complex` use it, while `quick` and the Fable tiers (`deep` and `complex-high`) use `medium`, so `xhigh` only reaches a `standard` session. pi's level goes to the `claude` CLI's `--effort` level of the same name for every Claude model. If you pick a thinking level yourself in pi, yours is used for the rest of the session. Picking the level pi was set to when the session was classified is not noticed, so the routed level stays. When the classifier cannot answer, your level is used from the start.
 
 ## Classifier
 
@@ -36,6 +36,6 @@ On 30 held-out hand-labelled prompts, Haiku got 28 right against 18 for the prev
 
 ## Dataset log
 
-Each newly routed session appends one JSON line to `~/.pi/agent/laya-dataset.jsonl` (it follows `PI_CODING_AGENT_DIR`): the prompt Haiku saw (up to 16,000 characters), `classifier`, and the tier, effort, model, and thinking level used, with no probabilities or score. `session` matches the pi session file, whose `thinking_level_change` and `model_change` entries show where you overrode the route. The file holds prompt text, so treat it like your session files.
+Each newly routed session appends one JSON line, and a quick session one per classified message until it leaves quick, to `~/.pi/agent/laya-dataset.jsonl` (it follows `PI_CODING_AGENT_DIR`): `time`, `mode`, the prompt Haiku saw (up to 16,000 characters), `classifier`, the tier, model and thinking level used, `effort` and `userLevel` (your level when it was classified) when kept, and `unclassified` when the classifier failed, with no probabilities or score. `session` matches the pi session file, whose `thinking_level_change` and `model_change` entries show where you overrode the route. The file holds prompt text, so treat it like your session files.
 
 The file keeps the name `laya-dataset.jsonl` from the earlier local classifier (Laya), removed together with `/laya`, `laya.json`, `PI_ROUTER_CLASSIFIER` and the `LAYA_*` variables; lines written since carry `"classifier": "haiku"` and no `probabilities` or `score`.

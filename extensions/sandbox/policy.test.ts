@@ -233,6 +233,25 @@ test("PI_SANDBOX=off runs bash unwrapped and checks no file tool", async () => {
 	}
 });
 
+test("PI_SANDBOX=off keeps risky confirmations", async () => {
+	const project = tmp("sandbox-project-");
+	process.env.PI_SANDBOX = "off";
+	seam.load = async () => (await fake()).runtime;
+	const s = await start(project);
+	try {
+		assert.match((await s.gate("bash", { command: "rm -r x" }))!.reason, /no UI/);
+		const u = fakeUI();
+		u.answer = async () => true;
+		assert.equal(await s.gate("bash", { command: "rm -r x" }, { ...s.ctx, hasUI: true, ui: u.ui }), undefined);
+		assert.equal(u.confirms.length, 1);
+		assert.equal(await s.gate("write", { path: join(HOME, ".pi-sandbox-probe") }), undefined);
+	} finally {
+		await s.shutdown();
+		restore();
+		sandbox({ on: () => {}, registerCommand: () => {} } as any); // back on for the next tests
+	}
+});
+
 test("PI_SANDBOX_READONLY=1: only the temp dirs are writable, sandbox.json's allowWrite is ignored and the rest kept, and PI_SANDBOX=off does not turn it off", async () => {
 	const [project, temp, extra] = [tmp("sandbox-project-"), tmp("sandbox-temp-"), tmp("sandbox-extra-")];
 	const secret = join(tmp("sandbox-secret-"), "secret");

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { crc32, deflateRawSync } from "node:zlib";
-import { chartTable, shown, unzip } from "./office-read.ts";
+import { chartTable, shown, slideNeedsImage, unzip } from "./office-read.ts";
 import pdfRead from "./pdf-read.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "office-read-"));
@@ -231,4 +231,13 @@ test("slides come as text with chart data, tables and notes, paged by slide; a s
 	} finally {
 		process.env.PATH = path;
 	}
+});
+
+test("theme-filled shapes need an image", () => {
+	const slide = (spPr: string, idx = 3, attrs = "") => `<p:sld><p:sp><p:nvSpPr><p:cNvSpPr${attrs}/></p:nvSpPr><p:spPr><a:prstGeom prst="rect"/>${spPr}</p:spPr><p:style><a:fillRef idx="${idx}"/></p:style><p:txBody><a:p/></p:txBody></p:sp></p:sld>`;
+	assert.equal(slideNeedsImage(slide("")), true);
+	assert.equal(slideNeedsImage(slide("<a:noFill/>")), false);
+	assert.equal(slideNeedsImage(slide("", 0)), false);
+	assert.equal(slideNeedsImage(slide("<a:ln><a:noFill/></a:ln>")), true);
+	assert.equal(slideNeedsImage(slide("", 3, ' txBox="1"')), false);
 });

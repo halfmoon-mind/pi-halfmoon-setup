@@ -30,7 +30,7 @@ flowchart LR
 
 | 기능 | 설명 |
 |---|---|
-| **세션 단위 라우팅** | 메인 세션은 Opus, 논리 중심(`deep`)이거나 아주 어려운 작업은 Fable, thinking 레벨도 난이도에 맞춤 |
+| **세션 단위 라우팅** | 메인 세션은 Opus, 빠른 질문은 Sonnet, 논리 중심(`deep`)이거나 아주 어려운 작업은 Fable, thinking 레벨도 난이도에 맞춤 |
 | **Haiku 분류기** | Claude Haiku가 `claude` 로그인으로 티어와 thinking을 고르고, 실패하면 Opus로 진행 |
 | **역할별 서브에이전트** | 탐색·계획·구현·리뷰를 독립된 컨텍스트에서 수행 |
 | **워크플로 명령어** | `/implement`, `/scout-and-plan`, `/implement-and-review`, `/deep` |
@@ -130,7 +130,7 @@ pi 입력창에서 프롬프트 명령어 뒤에 작업을 적습니다.
 | `/implement-and-review` | worker → reviewer → worker | 구현, 리뷰, Critical 항목 수정 |
 | `/deep` | deep-worker (에스컬레이션 시 → worker) | 논리 중심 목표 하나를 GPT-6.1 Sol로 처리하고, 근거로 정할 수 없는 결정은 worker에게 넘김 |
 
-프롬프트는 `subagent` 도구의 `chain` 모드를 쓰고 `{previous}`로 앞 단계의 출력을 넘깁니다. 도구는 단일 에이전트(`agent` + `task`)와 병렬 실행(`tasks`)도 지원합니다.
+`/scout-and-plan`, `/implement`, `/implement-and-review`는 `subagent` 도구의 `chain` 모드를 쓰고 `{previous}`로 앞 단계의 출력을 넘깁니다. `/deep`은 `deep-worker`를 한 번 호출하고, 출력이 `ESCALATE:`로 시작하면 `worker`를 호출합니다. 도구는 단일 에이전트(`agent` + `task`)와 병렬 실행(`tasks`)도 지원합니다.
 
 접힌 서브에이전트 실행은 에이전트마다 한 줄입니다. 실행 중에는 지금 하는 tool 호출을, 끝나면 답의 첫 줄(실패하면 오류)을, 아직 시작하지 않은 chain 단계는 `waiting`을 보여 줍니다. `Ctrl+O`를 누르면 각 작업, tool 호출, 전체 출력이 보입니다.
 
@@ -152,17 +152,17 @@ pi 입력창에서 프롬프트 명령어 뒤에 작업을 적습니다.
 - **PDF** — 각 페이지의 텍스트와, 그림이 있거나 텍스트가 없는 페이지만 이미지로.
 - **Word·Excel·PowerPoint** — 변경 추적, 댓글, 수식, 차트 숫자, 발표자 노트가 담긴 텍스트와, 이미지가 필요한 슬라이드만 이미지로.
 
-보내는 방식별 측정 결과는 [파일 읽기](docs/file-reading.ko.md)를 보세요.
+페이지와 슬라이드를 고르는 방식과 측정 결과는 [파일 읽기](docs/file-reading.ko.md)를 보세요.
 
 ### 샌드박스
 
 bash는 OS 샌드박스 안에서 실행되어 프로젝트와 임시 디렉터리에만 쓰고, 허용된 호스트에만 접속하며, 목록에 있는 자격 증명 경로는 읽지 못합니다. pi의 파일 도구도 같은 경로 규칙을 따르고, 위험한 몇 가지 동작은 먼저 확인을 받습니다.
 
-막힌 접근의 제안, 에스컬레이션, `~/.pi/agent/sandbox.json` 설정은 [샌드박스](docs/sandbox.ko.md)에 있습니다.
+규칙, 막힌 접근의 제안, 에스컬레이션, `~/.pi/agent/sandbox.json` 설정, 다루지 않는 것은 [샌드박스](docs/sandbox.ko.md)에 있습니다.
 
 ## 모델 선택
 
-`router/auto`는 첫 사용자 메시지를 티어 하나로 분류하고, 같은 분류에서 thinking 레벨도 정합니다.
+`router/auto`는 첫 사용자 메시지를 티어 하나로 분류합니다. `standard`와 `complex`는 같은 분류의 thinking 레벨도 따르고, 나머지 티어는 `medium`을 씁니다.
 
 | 티어 | 모델 |
 |---|---|
@@ -221,7 +221,7 @@ extensions/
   router.ts                 router/auto 분류, 티어와 라우팅
   router.test.ts            라우터 테스트
   sandbox/                  bash용 OS 샌드박스와 pi 파일 도구에 쓰는 같은 경로 검사
-  footer.ts                 라우팅된 tier와 모델을 보여 주는 2줄 하단 표시줄
+  footer.ts                 라우팅된 tier와 모델, 세션 ID 앞 13자를 보여 주는 2줄 하단 표시줄
   review-gate.ts            프롬프트마다 변경을 리뷰하는 종료 전 게이트
   handoff.ts                계획 먼저 메모, handoff 도구, /handoff
   checks.ts                 계획 단계 형식: 파싱, 검사, check 명령 실행
@@ -229,6 +229,9 @@ extensions/
   office-read.ts            .docx·.xlsx·.pptx용 read: 텍스트와 필요한 곳의 이미지
   tab-follow-up.ts          에이전트 실행 중 Tab으로 후속 질문 대기열에 추가
   timing.ts                 하단 표시줄의 프롬프트 타이머와 프롬프트마다의 시간 요약 줄
+  bash-times.ts             timing.ts가 보여 주는 명령별 평소 bash 소요 시간
+  compact-tools.ts          read·grep·find·ls·bash 호출을 한 줄로 접어 보여 줌
+  startup.ts                시작 경고와 워크플로 명령어 줄
   test-hooks.ts             테스트에서 pi 패키지를 pi와 같은 방식으로 불러오는 설정
   subagent/                 서브에이전트 실행 및 에이전트 탐색
   pi-claude-cli/            Claude CLI 프로바이더
@@ -260,13 +263,13 @@ pi 패키지는 설치된 pi(`~/.pi/agent/install`)에서 불러오고, `pi`와 
 
 </details>
 
-GitHub Actions는 push·PR마다, 그리고 매주 npm의 최신 pi를 설치해 같은 테스트를 실행합니다. 그래서 pi 업데이트로 이 패키지가 깨지면 바로 드러납니다.
+GitHub Actions는 main 브랜치 push와 모든 PR마다, 그리고 매주 npm의 최신 pi를 설치해 같은 테스트를 실행합니다. 그래서 pi 업데이트로 이 패키지가 깨지면 바로 드러납니다.
 
 ### 평가 세트
 
 `PI_EVAL=1`이면 print 모드(`pi -p`)도 대화형 세션처럼 게이트가 적용됩니다. 계획 먼저 메모, `handoff`(이때는 새 세션으로 옮기지 않음), 계획 check 실행, 리뷰 게이트가 모두 동작합니다. 서브에이전트는 json 모드로 실행되므로 적용되지 않습니다.
 
-`bench/agent/`에는 모델별 통과율과 거짓 완료율을 게이트가 있을 때와 없을 때로 재는 과제 8개가 있습니다.
+`bench/agent/`에는 모델별 통과율과 거짓 완료율을 게이트가 있을 때와 없을 때로 재는 과제 14개가 있습니다.
 
 ```bash
 node --import ./extensions/test-hooks.ts bench/agent/run.ts --dry
