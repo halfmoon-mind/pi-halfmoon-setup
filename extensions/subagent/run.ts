@@ -105,6 +105,8 @@ export async function runSingleAgent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	// The child's whole environment when given; the agent's `sandbox` is then not applied (the review gate's copy fallback).
+	env?: NodeJS.ProcessEnv,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -172,6 +174,7 @@ export async function runSingleAgent(
 				cwd: cwd ?? defaultCwd,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
+				env: env ?? (agent.sandbox === "read-only" ? { ...process.env, PI_SANDBOX_READONLY: "1" } : process.env),
 			});
 			let buffer = "";
 

@@ -19,6 +19,7 @@ export interface AgentConfig {
 	description: string;
 	tools?: string[];
 	model?: string;
+	sandbox?: "read-only";
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
@@ -42,6 +43,7 @@ type AgentFrontmatter = {
 	description?: unknown;
 	tools?: unknown;
 	model?: unknown;
+	sandbox?: unknown;
 };
 
 /**
@@ -102,6 +104,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			description: frontmatter.description,
 			tools: parseToolList(frontmatter.tools),
 			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+			sandbox: frontmatter.sandbox === "read-only" ? "read-only" : undefined,
 			systemPrompt: body,
 			source,
 			filePath,

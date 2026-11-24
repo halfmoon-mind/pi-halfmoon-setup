@@ -2,6 +2,7 @@
 name: reviewer
 description: Code review specialist for quality and security analysis
 tools: read, grep, find, ls, bash
+sandbox: read-only
 model: openai/gpt-6.1-sol:high
 ---
 

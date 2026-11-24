@@ -4,7 +4,9 @@
 // grep, find, ls, write, edit, handoff's plan) are checked here against the same paths. sudo, git push,
 // rm -r and .env writes ask first; with no UI they are blocked. Fails closed: until the sandbox is up,
 // or when it cannot start, bash and those tools are blocked. PI_SANDBOX=off, or a confirmed /sandbox off (which subagents and review gates
-// started afterwards inherit), turns all of it off; /sandbox on turns it back on, starting the sandbox if it is not up.
+// started afterwards inherit, read-only ones excepted), turns all of it off; /sandbox on turns it back on, starting the sandbox if it is not up.
+// PI_SANDBOX_READONLY=1 (subagent/run.ts sets it for an agent with `sandbox: read-only`) makes only the temp dirs writable, ignores
+// sandbox.json's allowWrite and PI_SANDBOX=off, and turns escalation and the host rating off; a start failure still blocks.
 // A blocked bash command is rated by openai/gpt-6.1-terra: low re-runs unsandboxed, high asks (no UI: denied) and the host rating; PI_SANDBOX_ESCALATE=off.
 // A write blocked outside the writable dirs, a localhost bind or (macOS) a trustd TLS check first offers that access (session or always; a
 // Flutter/Dart trigger offers its whole set at once, a No sticks for the session); re-run sandboxed, but not after exit 0.
@@ -17,7 +19,7 @@ import { type BashOperations, createLocalBashOperations, type ExtensionAPI, type
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { Type } from "typebox";
 import { keys, type Offer, offer, scanner } from "./denials.ts";
-import { MANDATORY, merge, ownCommondir, PKG, type Policy, policy, PROTECTED_CWD, readTargets, real, risky, type Runtime, seam, toCwd, within } from "./policy.ts";
+import { MANDATORY, merge, NOT_STARTED, ownCommondir, PKG, type Policy, policy, PROTECTED_CWD, readTargets, real, risky, type Runtime, seam, START_FAILED, toCwd, within } from "./policy.ts";
 
 const FIX =
 	"Fix: in a local checkout of this package run `npm ci`; macOS needs ripgrep (brew install ripgrep); Linux needs bubblewrap, socat and ripgrep. Or set PI_SANDBOX=off to run without the sandbox.";
@@ -43,6 +45,7 @@ seam.judge = (input, signal) => classify(PROMPT, input, session, signal);
 seam.judgeHost = (input, signal) => classify(HOST_PROMPT, input, session, signal);
 
 let off = false;
+let readOnly = false;
 let ui: ExtensionUIContext | undefined;
 let session: ExtensionContext | undefined;
 let declinedAt = 0; // when a network host was last denied
@@ -127,7 +130,7 @@ function allow(o: Offer) {
 
 /** Why bash and the checked tools cannot run now, if they cannot. */
 async function notReady(): Promise<string | undefined> {
-	if (!ready) return `sandbox: not started (no session_start, or the session ended). ${FIX}`;
+	if (!ready) return `${NOT_STARTED} (no session_start, or the session ended). ${FIX}`;
 	await ready;
 	return failure;
 }
@@ -139,7 +142,7 @@ function ask({ host, port }: { host: string; port: number | undefined }): Promis
 	if (!answer) {
 		answer = (async () => {
 			let risk = " ";
-			if (process.env.PI_SANDBOX_ESCALATE !== "off") {
+			if (process.env.PI_SANDBOX_ESCALATE !== "off" && !readOnly) {
 				const v = await rate(() => seam.judgeHost({ host, port, commands: [...running.values()].slice(0, 5).map((c) => c.slice(0, 2000)), intent: intent() }));
 				if (v.risk === "low") {
 					ui?.notify(`sandbox: allowed ${host} for this session (risk low: ${v.reason})`, "warning");
@@ -250,6 +253,10 @@ async function escalate(command: string, cwd: string, options: Options, first: {
 	const denials = [...events.map((e) => String(e.line).slice(0, 300)), ...lines].slice(0, 20);
 	if (!denials.length) return first;
 	const say = (s: string) => options.onData(Buffer.from(`\n[sandbox: blocked; ${s}]\n`));
+	if (readOnly) {
+		if (first.exitCode !== 0) say("this is a read-only sandbox: bash may write only under $TMPDIR and /tmp, and a blocked command is not re-run outside it");
+		return first;
+	}
 	if (process.env.PI_SANDBOX_ESCALATE === "off") {
 		say(`blocked by the sandbox; ${hint()}`);
 		return first;
@@ -347,7 +354,8 @@ export const sandboxedBash: BashOperations = {
 };
 
 export default function (pi: ExtensionAPI) {
-	off = process.env.PI_SANDBOX === "off";
+	readOnly = process.env.PI_SANDBOX_READONLY === "1";
+	off = !readOnly && process.env.PI_SANDBOX === "off";
 	(globalThis as any)[LIVE] = run;
 	pi.on("tool_call", async (event, ctx) => {
 		if (off) return;
@@ -428,13 +436,19 @@ async function start(ctx: ExtensionContext) {
 		// gets it only inside the root it inherited: its cwd may narrow what is writable, never widen it.
 		const here = real(seam.cwd());
 		const inherited = ui ? undefined : process.env.PI_SANDBOX_ROOT;
-		const root = real(ctx.cwd) === here && !PROTECTED_CWD.test(here) && (!inherited || within(real(inherited), here)) ? here : undefined;
+		const root = !readOnly && real(ctx.cwd) === here && !PROTECTED_CWD.test(here) && (!inherited || within(real(inherited), here)) ? here : undefined;
 		process.env.PI_SANDBOX_ROOT = root ?? inherited ?? real(ctx.cwd);
 		if (!root && ui) ui.notify(`sandbox: the session dir ${ctx.cwd} is not pi's working dir ${here}, or is inside .git, .claude, .vscode or .idea, so bash may write only the temp dirs`, "warning");
 		const file = join(getAgentDir(), "sandbox.json");
 		const merged = merge(policy(root), existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {}, ctx.cwd);
-		const parsed = runtime.SandboxRuntimeConfigSchema.safeParse(merged);
+		let parsed = runtime.SandboxRuntimeConfigSchema.safeParse(merged);
 		if (!parsed.success) throw new Error(`invalid sandbox policy: ${parsed.error.message}`);
+		// Read-only: the supplied file passed as a whole; only then are its write grants dropped.
+		if (readOnly) {
+			merged.filesystem.allowWrite = policy(undefined).filesystem.allowWrite;
+			parsed = runtime.SandboxRuntimeConfigSchema.safeParse(merged);
+			if (!parsed.success) throw new Error(`invalid sandbox policy: ${parsed.error.message}`);
+		}
 		config = merged;
 		if (root) ownCommondir(root); // before any command runs, so there is no moment the redirect is writable
 		await runtime.SandboxManager.initialize(parsed.data as SandboxRuntimeConfig, ask);
@@ -442,7 +456,7 @@ async function start(ctx: ExtensionContext) {
 			ui.notify(`sandbox: this project holds the loaded pi package (${PKG}); edits to its code run unsandboxed on /reload, restart or the next subagent startup`, "warning");
 		}
 	} catch (e) {
-		failure = `sandbox: could not start, so bash and the file tools are blocked: ${(e as Error).message}. ${FIX}`;
+		failure = `${START_FAILED}, so bash and the file tools are blocked: ${(e as Error).message}. ${FIX}`;
 		if (ui) ui.notify(failure, "error");
 	} finally {
 		starting = undefined;

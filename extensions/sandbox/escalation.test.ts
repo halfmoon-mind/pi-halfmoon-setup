@@ -5,7 +5,7 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { scanner } from "./denials.ts";
-import { sandboxedBash, verdict } from "./index.ts";
+import sandbox, { sandboxedBash, verdict } from "./index.ts";
 import { seam } from "./policy.ts";
 import { bash, escalating, F, fakeUI, HIGH, HOME, LOW, macOS, restore, start, tmp, unique } from "./test-helpers.ts";
 
@@ -149,6 +149,28 @@ test("escalation: PI_SANDBOX_ESCALATE=off leaves a denied command denied", async
 	} finally {
 		await s.shutdown();
 		restore();
+	}
+});
+
+test("escalation: PI_SANDBOX_READONLY=1 leaves a denied command denied and unrated, with a read-only note; an exit 0 gets no note; an unknown host is denied unrated", async () => {
+	process.env.PI_SANDBOX_READONLY = "1";
+	const s = await escalating({ violations: () => [{ line: "deny(1) file-write-create /x" }] });
+	try {
+		const { exitCode, out } = await s.run(F);
+		assert.equal(exitCode, 1);
+		assert.match(out, /read-only sandbox/);
+		// F prints `outside` only when re-run unsandboxed; the note itself says "not re-run outside it".
+		assert.doesNotMatch(out, /^outside$|sandbox\.json|\/sandbox off/m);
+		assert.equal(s.calls.length, 0);
+		const ok = await s.run("true");
+		assert.equal(ok.exitCode, 0);
+		assert.doesNotMatch(ok.out, /\[sandbox/);
+		assert.equal(await s.got.ask!({ host: "h1", port: 443 }), false);
+		assert.equal(s.hostCalls.length, 0);
+	} finally {
+		await s.shutdown();
+		restore();
+		sandbox({ on: () => {}, registerCommand: () => {} } as any); // not read-only for the next tests
 	}
 });
 

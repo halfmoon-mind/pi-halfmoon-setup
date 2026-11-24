@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { discoverAgents } from "./agents.ts";
 import subagent from "./index.ts";
+import { runSingleAgent } from "./run.ts";
 
 // A fresh, empty agent dir, so neither the real ~/.pi/agent/agents nor another test's agents override this package's.
 const freshAgentDir = () => (process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "subagent-test-")));
@@ -29,6 +30,42 @@ test("the package's agents load with their models; user and project agents with 
 		reviewer: "user openai/gpt-6.1-sol:high",
 		worker: "user pi-claude-cli/claude-opus:high",
 	});
+});
+
+test("only the package's reviewer is sandbox: read-only; a user reviewer.md without the key, or with another value, is not", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "subagent-project-"));
+	freshAgentDir();
+	const sandboxes = Object.fromEntries(discoverAgents(cwd, "user").agents.map((a) => [a.name, a.sandbox]));
+	assert.equal(sandboxes.reviewer, "read-only");
+	for (const [name, sandbox] of Object.entries(sandboxes)) if (name !== "reviewer") assert.equal(sandbox, undefined, name);
+
+	const user = join(freshAgentDir(), "agents");
+	agentFile(user, "reviewer", "user/model");
+	assert.equal(discoverAgents(cwd, "user").agents.find((a) => a.name === "reviewer")!.sandbox, undefined);
+	writeFileSync(join(user, "reviewer.md"), "---\nname: reviewer\ndescription: test\nsandbox: off\n---\n");
+	assert.equal(discoverAgents(cwd, "user").agents.find((a) => a.name === "reviewer")!.sandbox, undefined);
+});
+
+test("an agent with sandbox: read-only is spawned with PI_SANDBOX_READONLY=1; an env override replaces it", async () => {
+	freshAgentDir();
+	const dir = mkdtempSync(join(tmpdir(), "fake-pi-"));
+	process.argv[1] = join(dir, "pi.mjs");
+	writeFileSync(
+		process.argv[1],
+		`const env = { ro: process.env.PI_SANDBOX_READONLY ?? null, sandbox: process.env.PI_SANDBOX ?? null };
+		const message = { role: "assistant", content: [{ type: "text", text: JSON.stringify(env) }], stopReason: "stop" };
+		console.log(JSON.stringify({ type: "message_end", message }));`,
+	);
+	const { agents } = discoverAgents(dir, "user");
+	const envOf = async (name: string, env?: NodeJS.ProcessEnv) => {
+		const r = await runSingleAgent(dir, {}, agents, name, "t", undefined, undefined, undefined, undefined, (results) => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results }), env);
+		const last = r.messages.at(-1) as any;
+		return JSON.parse(last.content[0].text);
+	};
+	assert.equal((await envOf("reviewer")).ro, "1");
+	assert.equal((await envOf("scout")).ro, null);
+	const { PI_SANDBOX_READONLY: _, ...rest } = process.env;
+	assert.deepEqual(await envOf("reviewer", { ...rest, PI_SANDBOX: "off" }), { ro: null, sandbox: "off" });
 });
 
 test("a chain runs each agent on its own model and hands the previous step's output to the next", async () => {

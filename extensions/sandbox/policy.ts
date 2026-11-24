@@ -8,6 +8,9 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 export type Runtime = typeof import("@anthropic-ai/sandbox-runtime");
 export type Policy = { network: Record<string, unknown>; filesystem: Record<"allowWrite" | "denyWrite" | "denyRead" | "allowRead", string[]>; enableWeakerNetworkIsolation?: boolean };
 
+export const START_FAILED = "sandbox: could not start";
+export const NOT_STARTED = "sandbox: not started";
+
 export const PKG = real(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const HOSTS = ["github.com", "*.github.com", "*.githubusercontent.com", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org"];
 // Mirrors sandbox-runtime 0.0.83's mandatory write denies (sandbox-utils.js DANGEROUS_FILES and

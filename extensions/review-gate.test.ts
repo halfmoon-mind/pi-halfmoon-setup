@@ -1,12 +1,13 @@
 // Run: node --import ./extensions/test-hooks.ts --test extensions/review-gate.test.ts
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { seam } from "./checks.ts";
 import reviewGate, { parseVerdict, reviewNotes, reviewTask, runLog, snapshot } from "./review-gate.ts";
+import { NOT_STARTED, START_FAILED } from "./sandbox/policy.ts";
 
 // Waits, up to 30 s, until `ok()` holds.
 const until = async (ok: () => boolean) => {
@@ -98,7 +99,9 @@ test("a prompt that changed the repo is reviewed before pi settles; a BLOCK send
 	assert.match(first, /Judge the inputs the request means[\s\S]*ordinary caller passes[\s\S]*"never throws"/);
 	assert.match(first, /Inputs specifically named by the request remain in scope even if unusual/);
 	assert.match(first, /hostile or exotic input[\s\S]*goes under Warnings, not Critical, unless the request specifically includes that input or is about untrusted input or security/);
-	assert.match(first, /For this review, bash may also run the project's existing test command after you inspect it[\s\S]*if safety is uncertain, skip execution[\s\S]*name the changes under Warnings/);
+	assert.match(first, /For this review, bash may also run the project's existing test command after you inspect it[\s\S]*if safety is uncertain, skip execution/);
+	assert.match(first, /Bash runs in a read-only sandbox: it can write only under `\$TMPDIR` and `\/tmp`[\s\S]*not retried outside the sandbox[\s\S]*cannot be checked here: skip it and say so under Unverified[\s\S]*do not run long commands, and skip a command you are unsure about/);
+	assert.doesNotMatch(first, /yours to keep|disposable copy/);
 	assert.match(first, /BLOCK for a bug names the concrete call or operation[\s\S]*`node -e`[\s\S]*If execution is unavailable or unsafe[\s\S]*completed run of that same call or operation does not reproduce is not a BLOCK/);
 	assert.match(first, /runtime-reproduction rule does not apply to omitted requested items[\s\S]*any missing requested item still means BLOCK/);
 	assert.match(first, /<user-messages-([0-9a-f]{8})>\nEarlier user message:\nset up a counter in a\.txt\n\nEarlier user message:\nHEAD x+\n\[cut 1033 characters\]\nx+ what should the counter be\?\n\nLatest user message:\n진행해\n<\/user-messages-\1>/);
@@ -513,6 +516,7 @@ test("reviewTask with the gate eval's input: one request, no tool log, the summa
 	const o = { base: "abc", messages: [{ role: "user", content: "do X", timestamp: 0 }] as any, since: 0, summary: "Done. All tests pass." };
 	const plain = reviewTask(o);
 	assert.match(plain, /Latest user message:\ndo X/);
+	assert.match(plain, /Bash runs in a read-only sandbox/);
 	assert.doesNotMatch(plain, /tool-log-|follows the plan/);
 	assert.ok(plain.endsWith("Done. All tests pass."));
 	const planned = reviewTask({ ...o, plan: "docs/plans/p.md", requirements: true });
@@ -782,4 +786,285 @@ test("the run log keeps the latest calls and says how many it dropped", () => {
 	const loud = runLog(Array.from({ length: 60 }, (_, i) => call(i, "y".repeat(500))).flat() as any, 5);
 	assert.ok(loud.length <= 8100, `the log stays near its cap (${loud.length})`);
 	assert.match(loud, /^\[\d+ earlier calls not shown\]\n[\s\S]*bash step 59 \[ok\] → y{300}$/);
+});
+
+// Keep this test last: it sets review-gate.ts's module-level readOnlyFails, which sends every later review in this
+// process to a copy. Its detector and retry-budget scenarios use fresh, query-qualified module instances instead.
+test("an unavailable read-only sandbox discards the attempt and reviews a validated disposable copy until restart; no copy possible leaves the turn unreviewed", async () => {
+	const gitKeys = ["GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"];
+	const saved: Record<string, string | undefined> = Object.fromEntries(["PI_CODING_AGENT_DIR", "PI_SANDBOX", ...gitKeys].map((k) => [k, process.env[k]]));
+	const savedArgv1 = process.argv[1];
+	const restore = (k: string) => (saved[k] === undefined ? delete process.env[k] : (process.env[k] = saved[k]));
+	process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "review-gate-agent-"));
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+	const commit = (cwd: string) => git(cwd, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c");
+	const newRepo = (prefix: string) => {
+		const r = mkdtempSync(join(tmpdir(), prefix));
+		git(r, "init", "-q");
+		writeFileSync(join(r, "a.txt"), "1\n");
+		git(r, "add", ".");
+		commit(r);
+		return r;
+	};
+	const repo = newRepo("review-gate-copy-");
+	const source = realpathSync(repo);
+	writeFileSync(join(repo, ".gitignore"), "ignored.txt\n");
+	writeFileSync(join(repo, ".hidden"), "h\n");
+	mkdirSync(join(repo, "sub"));
+	writeFileSync(join(repo, "sub", "b.txt"), "b\n");
+	git(repo, "add", ".");
+	commit(repo);
+	writeFileSync(join(repo, "ignored.txt"), "i\n");
+
+	// The reviewer's pi: logs where and how it ran, waits while `slow` exists, then acts as the next mode in `script`
+	// (a queue), or, with none left, as `broken` when read-only and the `broken` file exists, else `allow`.
+	const dir = mkdtempSync(join(tmpdir(), "fake-pi-"));
+	const log = join(dir, "runs.jsonl");
+	const slow = join(dir, "slow");
+	const broken = join(dir, "broken");
+	const script = join(dir, "script.json");
+	process.argv[1] = join(dir, "pi.mjs");
+	writeFileSync(
+		process.argv[1],
+		`import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+		import { execFileSync } from "node:child_process";
+		import { dirname, resolve } from "node:path";
+		const g = (...a) => { try { return execFileSync("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
+		const ro = process.env.PI_SANDBOX_READONLY === "1";
+		const queue = existsSync(${JSON.stringify(script)}) ? JSON.parse(readFileSync(${JSON.stringify(script)}, "utf8")) : [];
+		const mode = queue.length ? queue.shift() : ro && existsSync(${JSON.stringify(broken)}) ? "broken" : "allow";
+		if (existsSync(${JSON.stringify(script)})) writeFileSync(${JSON.stringify(script)}, JSON.stringify(queue));
+		const top = realpathSync(g("rev-parse", "--show-toplevel"));
+		const enc = dirname(top);
+		appendFileSync(${JSON.stringify(log)}, JSON.stringify({
+			cwd: process.cwd(), ro, sandbox: process.env.PI_SANDBOX ?? null, gitEnv: Object.keys(process.env).filter((k) => k.startsWith("GIT_")),
+			diff: execFileSync("git", ["diff", "HEAD"], { encoding: "utf8" }), top, enc, encMode: statSync(enc).mode & 0o777, files: readdirSync(top),
+			gitDir: realpathSync(resolve(g("rev-parse", "--git-dir"))), commonDir: realpathSync(resolve(g("rev-parse", "--git-common-dir"))), mode, task: process.argv.at(-1),
+		}) + "\\n");
+		const end = Date.now() + 120_000;
+		while (existsSync(${JSON.stringify(slow)}) && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+		const say = (message) => console.log(JSON.stringify({ type: "message_end", message }));
+		const tool = (text, isError) => say({ role: "toolResult", toolCallId: "b", toolName: "bash", content: [{ type: "text", text }], isError });
+		if (mode === "broken" || mode === "broken-none") tool(${JSON.stringify(START_FAILED)} + ", so bash and the file tools are blocked: ripgrep (rg) not found.", true);
+		if (mode === "notstarted") tool(${JSON.stringify(NOT_STARTED)} + " (no session_start, or the session ended).", true);
+		if (mode === "printed") tool(${JSON.stringify(START_FAILED)} + "\\n" + ${JSON.stringify(NOT_STARTED)}, false); // a grep that found both
+		const text = { broken: "BLOCK: could not read the diff", notstarted: "BLOCK: could not read the diff", "broken-none": "UNAVAILABLE OUTPUT", none: "no verdict here" }[mode] ?? "ALLOW: fine";
+		say({ role: "assistant", content: [{ type: "text", text }], stopReason: "stop" });`,
+	);
+	const runs = (): any[] => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+	const inSource = (p: string) => p === source || p.startsWith(source + "/");
+
+	// Extraction is asked, and fails, for every output with no verdict line.
+	const extracted: string[] = [];
+	const modelRegistry = {
+		find: (provider: string, id: string) => ({ provider, id }),
+		hasConfiguredAuth: () => true,
+		complete: async (_model: any, context: any) => {
+			extracted.push(context.messages[0].content);
+			throw new Error("openai down");
+		},
+	};
+	// One gate instance with its entries, notices, statuses and widget first lines.
+	const gate = (factory: (pi: any) => void) => {
+		const handlers: Record<string, any> = {};
+		const logged: any[] = [];
+		const notices: string[] = [];
+		const statuses: Record<string, string | undefined> = {};
+		const widgetLines: string[] = [];
+		let esc: ((data: string) => any) | undefined;
+		factory({ appendEntry: (customType: string, data: any) => logged.push({ customType, ...data }), on: (event: string, h: any) => (handlers[event] = h), registerCommand: () => {}, registerTool: () => {}, sendMessage: () => {} });
+		const ui = { theme: { fg: (_c: string, t: string) => t }, setStatus: (k: string, t?: string) => (statuses[k] = t), setWidget: (_k: string, lines?: string[]) => lines && widgetLines.push(lines[0]!), notify: (m: string) => notices.push(m), onTerminalInput: (h: any) => ((esc = h), () => (esc = undefined)) };
+		const ctx = (cwd: string) => ({ mode: "tui", cwd, ui, sessionManager: { getBranch: () => [] }, hasPendingMessages: () => false, modelRegistry });
+		const reviews = () => logged.filter((e) => e.customType === "review-gate").map((e) => [e.verdict, e.sandbox]);
+		return {
+			logged, notices, statuses, widgetLines, reviews,
+			start: (cwd: string) => handlers.before_agent_start({}, ctx(cwd)),
+			settle: (cwd: string) => handlers.agent_before_settle({ entries: [], outcome: "completed", context: { llmMessages: [] } }, ctx(cwd)),
+			esc: (data: string) => esc!(data),
+		};
+	};
+	let n = 1;
+	const change = (cwd: string, file = "a.txt") => writeFileSync(join(cwd, file), `${++n}\n`);
+	const g = gate(reviewGate);
+	const locked = join(repo, "locked");
+
+	try {
+		// (a) A parent with the sandbox off still starts a read-only reviewer in the repository.
+		process.env.PI_SANDBOX = "off";
+		g.start(repo);
+		change(repo);
+		assert.equal(await g.settle(repo), undefined);
+		let r = runs();
+		assert.equal(r.length, 1);
+		assert.equal(r[0].cwd, source);
+		assert.equal(r[0].ro, true);
+		assert.match(r[0].task, /Bash runs in a read-only sandbox/);
+		assert.equal(g.notices.at(-1), "review: fine");
+
+		// (b) The sandbox cannot start: the attempt is discarded, BLOCK and all, and a copy is reviewed with no sandbox.
+		writeFileSync(broken, "");
+		g.start(repo);
+		change(repo);
+		const diff = git(repo, "diff", "HEAD");
+		let before = { runs: runs().length, logged: g.logged.length };
+		assert.equal(await g.settle(repo), undefined, "the discarded attempt's BLOCK does not count");
+		r = runs().slice(before.runs);
+		assert.equal(r.length, 2);
+		assert.deepEqual([r[0].cwd, r[0].ro], [source, true]);
+		const c = r[1];
+		assert.ok(!inSource(c.cwd) && c.cwd.startsWith(realpathSync(tmpdir()) + "/"), c.cwd);
+		assert.deepEqual([c.ro, c.sandbox, c.diff], [false, "off", diff]);
+		assert.equal(c.top, c.cwd);
+		for (const p of [c.gitDir, c.commonDir]) assert.ok(p.startsWith(c.top + "/"), p);
+		assert.equal(c.encMode, 0o700, "the enclosing directory stays private");
+		assert.ok(c.files.includes(".hidden") && c.files.includes("ignored.txt"), c.files.join(" "));
+		assert.ok(c.task.includes(`in \`${c.top}\`, a disposable copy of \`${source}\``), c.task);
+		assert.match(c.task, /so `git diff [0-9a-f]{40}` works there/);
+		assert.match(c.task, /`file:line` paths relative to the repository root/);
+		assert.match(c.task, /this copy is not a security boundary/);
+		assert.doesNotMatch(c.task, /Bash runs in a read-only sandbox/);
+		assert.equal(g.notices.at(-1), "review: fine");
+		assert.deepEqual(g.reviews().slice(-2), [["NONE", "unavailable"], ["ALLOW: fine", undefined]]);
+		assert.equal(g.logged.length, before.logged + 2);
+		assert.ok(g.widgetLines.some((l) => l.replace(/ (\d+m)?\d+s$/, "") === "GPT reviewing a copy of the changes (sandbox unavailable)…"), g.widgetLines.join("\n"));
+		assert.equal(existsSync(c.cwd), false);
+		assert.equal(existsSync(c.enc), false);
+
+		// (c) Later reviews go straight to a copy, in the copied subdir.
+		rmSync(broken);
+		const sub = join(repo, "sub");
+		g.start(sub);
+		change(sub, "b.txt");
+		before = { runs: runs().length, logged: g.logged.length };
+		assert.equal(await g.settle(sub), undefined);
+		r = runs().slice(before.runs);
+		assert.equal(r.length, 1);
+		assert.equal(r[0].ro, false);
+		assert.ok(r[0].cwd.endsWith("/sub") && !inSource(r[0].cwd), r[0].cwd);
+		assert.equal(existsSync(r[0].enc), false);
+
+		// (d) Esc in copy mode stops the review and removes its copy.
+		writeFileSync(slow, "");
+		g.start(repo);
+		change(repo);
+		before = { runs: runs().length, logged: g.logged.length };
+		const stopped = g.settle(repo);
+		await until(() => runs().length > before.runs);
+		const t = Date.now();
+		assert.equal(g.esc("\x1b"), undefined);
+		assert.equal(await stopped, undefined);
+		assert.ok(Date.now() - t < 5000, "the settle returns promptly");
+		assert.equal(g.logged.length, before.logged);
+		assert.equal(runs().at(-1).ro, false);
+		await until(() => !existsSync(runs().at(-1).enc));
+		rmSync(slow);
+
+		// (e) A copy that fails: no reviewer runs at all, and the warning says why.
+		if (process.getuid?.() !== 0) {
+			g.start(repo);
+			writeFileSync(join(repo, ".gitignore"), "ignored.txt\nlocked\n");
+			writeFileSync(locked, "x");
+			chmodSync(locked, 0);
+			change(repo);
+			before = { runs: runs().length, logged: g.logged.length };
+			assert.equal(await g.settle(repo), undefined);
+			assert.equal(runs().length, before.runs);
+			assert.equal(g.logged.length, before.logged, "no review-gate entry");
+			assert.match(g.notices.at(-1)!, /sandbox is unavailable[\s\S]*copy could not be made[\s\S]*Permission denied[\s\S]*unreviewed[\s\S]*no unsandboxed reviewer was launched/);
+			assert.equal(g.statuses.review, "unreviewed");
+			chmodSync(locked, 0o600);
+		}
+
+		// (f) A linked worktree's git dir is outside its tree: refused.
+		const wt = join(mkdtempSync(join(tmpdir(), "review-gate-wt-")), "wt");
+		git(repo, "worktree", "add", "-q", wt, "-b", "wt");
+		try {
+			g.start(wt);
+			change(wt);
+			before = { runs: runs().length, logged: g.logged.length };
+			assert.equal(await g.settle(wt), undefined);
+			assert.equal(runs().length, before.runs);
+			assert.equal(g.logged.length, before.logged);
+			assert.match(g.notices.at(-1)!, /points at a git dir outside the tree/);
+		} finally {
+			git(repo, "worktree", "remove", "--force", wt);
+		}
+
+		// (g) A copy whose Git config or commondir still points at the source is refused, not repaired.
+		const external = newRepo("review-gate-worktree-");
+		git(external, "config", "core.worktree", realpathSync(external));
+		const common = newRepo("review-gate-common-");
+		writeFileSync(join(common, ".git", "commondir"), join(realpathSync(common), ".git") + "\n");
+		try {
+			for (const [fixture, offending] of [[external, /the copied Git working tree points outside the copy/], [common, /the copied --git-common-dir points outside the copy/]] as const) {
+				g.start(fixture);
+				change(fixture);
+				before = { runs: runs().length, logged: g.logged.length };
+				assert.equal(await g.settle(fixture), undefined);
+				assert.equal(runs().length, before.runs, fixture);
+				assert.equal(g.logged.length, before.logged);
+				assert.match(g.notices.at(-1)!, offending);
+			}
+		} finally {
+			git(external, "config", "--unset", "core.worktree");
+			rmSync(join(common, ".git", "commondir"), { force: true });
+		}
+
+		// (h) Inherited Git location and config overrides reach neither the copy's discovery nor the reviewer.
+		const decoy = newRepo("review-gate-decoy-");
+		g.start(repo);
+		change(repo);
+		const expected = git(repo, "diff", "HEAD");
+		Object.assign(process.env, { GIT_DIR: join(decoy, ".git"), GIT_WORK_TREE: decoy, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.worktree", GIT_CONFIG_VALUE_0: decoy });
+		try {
+			before = { runs: runs().length, logged: g.logged.length };
+			assert.equal(await g.settle(repo), undefined);
+			r = runs().slice(before.runs);
+			assert.equal(r.length, 1);
+			assert.deepEqual([r[0].ro, r[0].gitEnv, r[0].diff], [false, [], expected]);
+			assert.equal(r[0].top, r[0].cwd);
+			assert.ok(!inSource(r[0].top) && !r[0].top.startsWith(realpathSync(decoy)), r[0].top);
+			assert.ok(r[0].task.includes(`a disposable copy of \`${source}\``));
+			assert.equal(g.notices.at(-1), "review: fine");
+		} finally {
+			gitKeys.forEach(restore);
+		}
+
+		// (i) Fresh module instances, each with its own readOnlyFails.
+		const fresh = async (name: string) => gate((await import(`./review-gate.ts?${name}`)).default);
+		const scripted = async (instance: ReturnType<typeof gate>, modes: string[]) => {
+			writeFileSync(script, JSON.stringify(modes));
+			instance.start(repo);
+			change(repo);
+			const from = runs().length;
+			const settled = await instance.settle(repo);
+			return { settled, runs: runs().slice(from) };
+		};
+		// NOT_STARTED in an error result is detected too.
+		const notStarted = await fresh("not-started");
+		let got = await scripted(notStarted, ["notstarted"]);
+		assert.equal(got.settled, undefined);
+		assert.deepEqual(got.runs.map((x) => x.ro), [true, false]);
+		assert.deepEqual(notStarted.reviews(), [["NONE", "unavailable"], ["ALLOW: fine", undefined]]);
+		// A successful result that merely prints either marker is not.
+		const printed = await fresh("printed");
+		got = await scripted(printed, ["printed"]);
+		assert.deepEqual(got.runs.map((x) => x.ro), [true]);
+		assert.deepEqual(printed.reviews(), [["ALLOW: fine", undefined]]);
+		// No verdict, then an unavailable sandbox, then no verdict in the copy: three runs, never a fourth.
+		const budget = await fresh("budget");
+		extracted.length = 0;
+		got = await scripted(budget, ["none", "broken-none", "none"]);
+		assert.equal(got.settled, undefined);
+		assert.deepEqual(got.runs.map((x) => [x.mode, x.ro]), [["none", true], ["broken-none", true], ["none", false]]);
+		assert.deepEqual(budget.reviews(), [["NONE", undefined], ["NONE", "unavailable"], ["NONE", undefined]]);
+		assert.match(budget.notices.at(-1)!, /gave no verdict/);
+		assert.equal(budget.statuses.review, "unreviewed");
+		assert.deepEqual(extracted, ["no verdict here", "no verdict here"], "the discarded attempt's output is never read for a verdict");
+	} finally {
+		if (existsSync(locked)) chmodSync(locked, 0o600);
+		rmSync(slow, { force: true });
+		process.argv[1] = savedArgv1!;
+		Object.keys(saved).forEach(restore);
+	}
 });

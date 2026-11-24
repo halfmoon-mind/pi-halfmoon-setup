@@ -1,18 +1,18 @@
 // Run: node --import ./extensions/test-hooks.ts --test --test-timeout=60000 extensions/sandbox/policy.test.ts
 // From a trusted terminal or CI: the macOS tests start the real sandbox, which cannot nest in another.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createWriteToolDefinition, discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
 import sandbox, { blocked, sandboxedBash } from "./index.ts";
-import { merge, policy, real, risky, seam } from "./policy.ts";
-import { bash, fake, fakeUI, HIGH, HOME, macOS, PKG, restore, start, temps, tmp, unique } from "./test-helpers.ts";
+import { merge, NOT_STARTED, policy, real, risky, seam, START_FAILED } from "./policy.ts";
+import { bash, fake, fakeUI, HIGH, HOME, LOW, macOS, PKG, restore, start, temps, tmp, unique } from "./test-helpers.ts";
 
 test("before startup, bash refuses to run", async () => {
-	await assert.rejects(sandboxedBash.exec("true", process.cwd(), { onData: () => {} }), /sandbox/);
+	await assert.rejects(sandboxedBash.exec("true", process.cwd(), { onData: () => {} }), (e: Error) => e.message.startsWith(NOT_STARTED));
 });
 
 test("a missing runtime, a failed init, a malformed policy and a shut-down session never run bash unsandboxed", async () => {
@@ -32,6 +32,7 @@ test("a missing runtime, a failed init, a malformed policy and a shut-down sessi
 			try {
 				await assert.rejects(bash(`touch ${marker}`, project), reason, name);
 				assert.match((await s.gate("bash", { command: "ls" }))!.reason, reason, name);
+				assert.ok((await s.gate("bash", { command: "ls" }))!.reason.startsWith(START_FAILED), name);
 				assert.match((await s.gate("read", { path: "a.txt" }))!.reason, reason, name);
 				assert.equal(existsSync(marker), false, name);
 			} finally {
@@ -42,8 +43,9 @@ test("a missing runtime, a failed init, a malformed policy and a shut-down sessi
 		seam.load = async () => runtime;
 		const s = await start(project);
 		await s.shutdown();
-		await assert.rejects(bash(`touch ${marker}`, project), /not started/);
-		assert.match((await s.gate("write", { path: "a.txt" }))!.reason, /not started/);
+		await assert.rejects(bash(`touch ${marker}`, project), (e: Error) => e.message.startsWith(NOT_STARTED) && !e.message.includes(START_FAILED));
+		const reason = (await s.gate("write", { path: "a.txt" }))!.reason;
+		assert.ok(reason.startsWith(NOT_STARTED) && !reason.includes(START_FAILED), reason);
 		assert.deepEqual(wrapped, []);
 		assert.equal(existsSync(marker), false);
 	} finally {
@@ -231,6 +233,77 @@ test("PI_SANDBOX=off runs bash unwrapped and checks no file tool", async () => {
 	}
 });
 
+test("PI_SANDBOX_READONLY=1: only the temp dirs are writable, sandbox.json's allowWrite is ignored and the rest kept, and PI_SANDBOX=off does not turn it off", async () => {
+	const [project, temp, extra] = [tmp("sandbox-project-"), tmp("sandbox-temp-"), tmp("sandbox-extra-")];
+	const secret = join(tmp("sandbox-secret-"), "secret");
+	writeFileSync(secret, "s");
+	seam.temps = () => [temp];
+	process.env.PI_SANDBOX_READONLY = "1";
+	process.env.PI_SANDBOX = "off";
+	delete process.env.PI_SANDBOX_ROOT;
+	let loaded = false;
+	let initialized: any;
+	const f = await fake(async (c) => void (initialized = c));
+	seam.load = async () => ((loaded = true), f.runtime);
+	const s = await start(project, { files: { "sandbox.json": JSON.stringify({ filesystem: { allowWrite: [extra], denyRead: [secret] }, network: { allowedDomains: ["example.com"] } }) } });
+	try {
+		assert.equal(loaded, true);
+		assert.match((await s.gate("write", { path: "x" }))!.reason, /outside/);
+		assert.match((await s.gate("write", { path: join(extra, "x") }))!.reason, /outside/);
+		assert.equal(await s.gate("write", { path: join(temp, "x") }), undefined);
+		assert.match((await s.gate("read", { path: secret }))!.reason, /credential/);
+		assert.deepEqual(initialized.filesystem.allowWrite, [real(temp)]);
+		assert.ok(initialized.network.allowedDomains.includes("example.com"));
+		assert.equal((await bash("echo [$IN_SANDBOX]", project)).out, "[1]\n");
+	} finally {
+		await s.shutdown();
+		restore();
+		sandbox({ on: () => {}, registerCommand: () => {} } as any); // back to the default mode for the next tests
+	}
+});
+
+test("PI_SANDBOX_READONLY=1 with PI_SANDBOX=off: a sandbox that cannot start blocks bash and the file tools", async () => {
+	const project = tmp("sandbox-project-");
+	const marker = join(project, "ran");
+	process.env.PI_SANDBOX_READONLY = "1";
+	process.env.PI_SANDBOX = "off";
+	delete process.env.PI_SANDBOX_ROOT;
+	seam.load = () => Promise.reject(new Error("Cannot find package '@anthropic-ai/sandbox-runtime'"));
+	const s = await start(project);
+	try {
+		await assert.rejects(bash(`touch ${marker}`, project), /could not start/);
+		assert.match((await s.gate("bash", { command: "ls" }))!.reason, /could not start/);
+		assert.match((await s.gate("read", { path: "a.txt" }))!.reason, /could not start/);
+		assert.equal(existsSync(marker), false);
+	} finally {
+		await s.shutdown();
+		restore();
+		sandbox({ on: () => {}, registerCommand: () => {} } as any);
+	}
+});
+
+test("PI_SANDBOX_READONLY=1 still rejects malformed allowWrite", async () => {
+	const project = tmp("sandbox-project-");
+	process.env.PI_SANDBOX_READONLY = "1";
+	try {
+		for (const [allowWrite, reason] of [["/tmp/x", /list of paths/], [[1], /list of paths/], [["src/*"], /glob/]] as const) {
+			delete process.env.PI_SANDBOX_ROOT;
+			seam.load = async () => (await fake()).runtime;
+			const s = await start(project, { files: { "sandbox.json": JSON.stringify({ filesystem: { allowWrite } }) } });
+			try {
+				const r = (await s.gate("bash", { command: "ls" }))!.reason;
+				assert.ok(r.startsWith(START_FAILED), r);
+				assert.match(r, reason);
+			} finally {
+				await s.shutdown();
+			}
+		}
+	} finally {
+		restore();
+		sandbox({ on: () => {}, registerCommand: () => {} } as any);
+	}
+});
+
 test("/sandbox off needs a UI and a confirm; /sandbox on turns the same runtime back on", async () => {
 	const project = tmp("sandbox-project-");
 	let loads = 0;
@@ -315,6 +388,47 @@ test("macOS: the real sandbox lets bash write the project, not outside it, not r
 		restore();
 		rmSync(inside, { force: true });
 		if (existsSync(outside)) rmSync(outside); // only ours: the name is unique
+	}
+});
+
+test("macOS: a read-only sandbox in a repo outside the temp dirs runs git, node --test and node -e, and writes only the temp dirs, with no classifier call", macOS, async () => {
+	const repo = join(PKG, unique(".sandbox-ro-repo"));
+	const scratch = join("/tmp", unique("sandbox-ro"));
+	mkdirSync(repo);
+	const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" });
+	git("init", "-q");
+	writeFileSync(join(repo, "a.txt"), "1\n");
+	writeFileSync(join(repo, "t.test.mjs"), 'import test from "node:test"; test("ok", () => {});');
+	git("add", ".");
+	git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+	writeFileSync(join(repo, "a.txt"), "2\n");
+	process.env.PI_SANDBOX_READONLY = "1";
+	delete process.env.PI_SANDBOX_ROOT;
+	const judged: any[] = [];
+	seam.judge = async (input) => (judged.push(input), LOW);
+	seam.judgeHost = async (input) => (judged.push(input), LOW);
+	const s = await start(repo);
+	try {
+		for (const c of ["git status --porcelain", "git log --oneline", "git show --stat HEAD", "node --test t.test.mjs", "node -e 'console.log(1 + 1)'"]) {
+			const r = await bash(c, repo);
+			assert.equal(r.exitCode, 0, `${c}: ${r.out}`);
+		}
+		const diff = await bash("git diff", repo);
+		assert.equal(diff.exitCode, 0, diff.out);
+		assert.match(diff.out, /^\+2$/m);
+		assert.equal((await bash(`echo ok > ${scratch}`, repo)).exitCode, 0);
+		assert.equal(existsSync(scratch), true);
+		assert.notEqual((await bash("echo x > new.txt", repo)).exitCode, 0);
+		assert.equal(existsSync(join(repo, "new.txt")), false);
+		assert.notEqual((await bash("echo x >> a.txt", repo)).exitCode, 0);
+		assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "2\n");
+		assert.deepEqual(judged, []);
+	} finally {
+		await s.shutdown();
+		restore();
+		sandbox({ on: () => {}, registerCommand: () => {} } as any);
+		rmSync(repo, { recursive: true, force: true });
+		rmSync(scratch, { force: true });
 	}
 });
 

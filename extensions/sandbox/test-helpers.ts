@@ -75,7 +75,7 @@ export async function bash(command: string, cwd: string) {
 
 const env = { ...process.env };
 export function restore() {
-	for (const k of ["PI_SANDBOX", "PI_SANDBOX_ROOT", "PI_CODING_AGENT_DIR", "PI_SANDBOX_ESCALATE"]) env[k] === undefined ? delete process.env[k] : (process.env[k] = env[k]);
+	for (const k of ["PI_SANDBOX", "PI_SANDBOX_ROOT", "PI_CODING_AGENT_DIR", "PI_SANDBOX_ESCALATE", "PI_SANDBOX_READONLY"]) env[k] === undefined ? delete process.env[k] : (process.env[k] = env[k]);
 	seam.load = load;
 	seam.temps = temps;
 	seam.cwd = cwd0;
