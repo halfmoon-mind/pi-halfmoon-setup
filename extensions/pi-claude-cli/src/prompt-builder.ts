@@ -300,11 +300,11 @@ function contentToText(content: string | any[]): string {
   if (!Array.isArray(content)) return "";
 
   return content
+    // Omit thinking from plain-text history replay to reduce suspected
+    // reasoning_extraction safeguard triggers.
+    .filter((block) => block.type !== "thinking")
     .map((block) => {
       if (block.type === "text") return block.text ?? "";
-      if (block.type === "thinking") {
-        return block.thinking ? `[Thinking] ${block.thinking}` : "";
-      }
       if (block.type === "toolCall") {
         const isCustom = isCustomToolName(block.name);
         if (isCustom) {

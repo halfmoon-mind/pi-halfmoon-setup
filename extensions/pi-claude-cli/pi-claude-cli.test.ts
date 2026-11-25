@@ -109,7 +109,7 @@ test("pi 0.99's system message reaches claude as the system prompt, and claude k
 });
 
 // A new claude process starts with no conversation: the first call, or one the running process cannot take.
-test("a new claude process gets pi's whole history with the system prompt, including its tool calls and reasoning", async () => {
+test("a new claude process gets pi's history with the system prompt and tool calls, excluding thinking", async () => {
 	const lines = [event({ type: "message_stop" }), { type: "result", subtype: "success" }];
 	const messages = [
 		{ role: "system", content: "You are pi.", timestamp: 1 },
@@ -137,8 +137,7 @@ test("a new claude process gets pi's whole history with the system prompt, inclu
 			"USER:",
 			"read /a.txt, then delegate",
 			"ASSISTANT:",
-			// Without its reasoning the model would plan each step again from scratch.
-			"[Thinking] Start with a.txt.",
+			// Thinking is excluded from plain-text history replay.
 			'Historical tool call (non-executable): Read args={"file_path":"/a.txt"}',
 			"TOOL RESULT (historical Read):",
 			"A",
