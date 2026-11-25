@@ -167,7 +167,7 @@ test("claude waits in its MCP call for the result pi sends next, then goes on in
 		event({ type: "message_stop" }),
 		{ type: "result", subtype: "success" },
 	];
-	const fake = { steps: [{ read: true }, { lines: toolUse }, { call: "t1" }, { lines: say("a.txt says A") }, { read: true }, { read: true }, { lines: say("bye") }, { exit: 0 }] };
+	const fake = { steps: [{ read: true }, { lines: toolUse }, { call: "t1" }, { lines: say("a.txt says A") }, { read: true }, { lines: say("bye") }, { exit: 0 }] };
 	const sys = createInitialSystemMessage(undefined, [read as any])!;
 	const ask = { role: "user", content: "read /a.txt", timestamp: 1 };
 
@@ -179,10 +179,30 @@ test("claude waits in its MCP call for the result pi sends next, then goes on in
 	const bye = await run(fake, [sys, ask, call, result, answer, { role: "user", content: "thanks", timestamp: 3 }, { role: "user", content: "note", timestamp: 4 }]);
 	assert.deepEqual(bye.content, [{ type: "text", text: "bye" }]);
 
-	// The one process got the prompt, then pi's tool result as the MCP call's result, then only the new messages (a note after the user's message does not restart it).
+	// The one process got the prompt, then pi's tool result as the MCP call's result, then only the new messages
+	// as one stdin message: claude answers each as its own turn, and a note after the user's message does not restart it.
 	const { inputs, toolResults } = recorded();
 	assert.deepEqual(toolResults, [{ content: [{ type: "text", text: "A" }], isError: false }]);
-	assert.deepEqual(inputs.map((input: any) => input.message.content), ["USER:\nread /a.txt", [{ type: "text", text: "thanks" }], [{ type: "text", text: "note" }]]);
+	assert.deepEqual(inputs.map((input: any) => input.message.content), ["USER:\nread /a.txt", [{ type: "text", text: "thanks" }, { type: "text", text: "note" }]]);
+});
+
+// No tools, so no MCP socket: this runs where Unix sockets are blocked.
+test("user messages after a reply reach the running claude as one message, so claude answers them in one turn", async () => {
+	const say = (text: string) => [
+		event({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+		event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }),
+		event({ type: "content_block_stop", index: 0 }),
+		event({ type: "message_stop" }),
+		{ type: "result", subtype: "success" },
+	];
+	const fake = { steps: [{ read: true }, { lines: say("which account?") }, { read: true }, { lines: say("153 it is") }, { exit: 0 }] };
+	const ask = { role: "user", content: "find the account", timestamp: 1 };
+	const question = await run(fake, [ask]);
+	const answer = await run(fake, [ask, question, { role: "user", content: "gaps", timestamp: 2 }, { role: "user", content: "153", timestamp: 3 }]);
+
+	assert.deepEqual(answer.content, [{ type: "text", text: "153 it is" }]);
+	const { inputs } = recorded();
+	assert.deepEqual(inputs.map((input: any) => input.message.content), ["USER:\nfind the account", [{ type: "text", text: "gaps" }, { type: "text", text: "153" }]]);
 });
 
 test("claude gets only the tools pi declares, and restarts with a tool pi loads later", async () => {

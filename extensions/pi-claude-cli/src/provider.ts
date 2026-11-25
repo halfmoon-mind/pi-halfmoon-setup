@@ -111,14 +111,18 @@ export function streamViaCli(
     runTurn(s, stream, model, context.messages.length, options);
 
     // Only now that the turn listens: each of these lets the CLI go on.
-    for (const message of news ?? []) {
-      if (message.role === "toolResult") {
+    // User messages go as one: the CLI answers each stdin message as its own turn, and this call takes only the first.
+    if (news?.[0]?.role === "user") {
+      writeUserMessage(
+        s.proc,
+        news.flatMap((m) => buildFinalUserContent(m.content)),
+      );
+    } else {
+      for (const message of news ?? []) {
         deliverToolResult(message.toolCallId, {
           content: message.content,
           isError: message.isError,
         });
-      } else {
-        writeUserMessage(s.proc, buildFinalUserContent(message.content));
       }
     }
   } catch (err: any) {
