@@ -6,7 +6,7 @@
  *
  * Every tool call is allowed: pi's tools (mcp__custom-tools__*) only wait for
  * the result pi sends after running them (see mcp-config.ts), and the CLI keeps
- * only its own web tools and the user's MCP servers.
+ * only its own web tools (--strict-mcp-config drops the user's MCP servers).
  */
 
 import type { ClaudeControlRequest } from "./types";
