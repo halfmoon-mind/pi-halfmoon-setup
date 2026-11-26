@@ -5,11 +5,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync
 import { basename, join } from "node:path";
 import { test } from "node:test";
 import { offer, opening, scanner } from "./denials.ts";
+import { sandboxedBash } from "./index.ts";
 import { real, seam } from "./policy.ts";
-import { bash, escalating, fakeUI, HIGH, HOME, LOW, macOS, made, restore, start, tmp, unique } from "./test-helpers.ts";
+import { bash, escalating, F, fakeUI, G, HIGH, HOME, LOW, macOS, made, restore, start, tmp, unique, homeDir } from "./test-helpers.ts";
 
-// Denied in the (fake) sandbox under D until D is writable (in $ALLOW); exit 3 outside it.
-const G = (D: string) => `case ":$ALLOW:" in *":${D}:"*) echo ok; exit 0;; esac; echo "bash: line 1: ${D}/cache/x: Operation not permitted" >&2; if [ -n "$IN_SANDBOX" ]; then exit 1; fi; echo outside; exit 3`;
 const FLUTTER = ["fvm", ".pub-cache", ".dart-tool", ".dartServer", ".flutter", ".flutter-devtools", ".config/flutter", "Library/Caches/flutter_engine"];
 const SOCKET = "SocketException: Failed to create server socket (OS Error: Operation not permitted, errno = 1), address = 127.0.0.1, port = 0";
 const LISTEN = "Error: listen EPERM: operation not permitted 127.0.0.1:3000";
@@ -83,7 +82,7 @@ test("allow dirs: with a UI, a write blocked outside the writable dirs offers it
 	const u = fakeUI();
 	u.pick = (o) => o[0];
 	const s = await escalating({ ui: u.ui });
-	const D = join(HOME, unique(".pi-sandbox-test"));
+	const D = homeDir();
 	try {
 		const { exitCode, out } = await s.run(G(D));
 		assert.equal(exitCode, 0);
@@ -109,7 +108,7 @@ test("allow dirs: on Linux, where the runtime mounts only existing write roots, 
 	u.pick = (o) => o[0];
 	seam.platform = () => "linux";
 	const s = await escalating({ ui: u.ui });
-	const D = join(HOME, unique(".pi-sandbox-test"));
+	const D = homeDir();
 	made.push(D);
 	try {
 		assert.equal(existsSync(D), false);
@@ -128,13 +127,13 @@ test("allow dirs: always appends to sandbox.json; a malformed file stays as it i
 	const file = join(s.agentDir, "sandbox.json");
 	try {
 		writeFileSync(file, '{"network":{"allowedDomains":["example.org"]}}');
-		const D = join(HOME, unique(".pi-sandbox-test"));
+		const D = homeDir();
 		const r = await s.run(G(D));
 		assert.equal(r.exitCode, 0);
 		assert.match(r.out, /and saved them to sandbox\.json → re-ran in the sandbox\]\nok\n$/);
 		assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { network: { allowedDomains: ["example.org"] }, filesystem: { allowWrite: [`~/${basename(D)}`] } });
 		writeFileSync(file, '{"filesystem": []}');
-		const again = await s.run(G(join(HOME, unique(".pi-sandbox-test"))));
+		const again = await s.run(G(homeDir()));
 		assert.equal(readFileSync(file, "utf8"), '{"filesystem": []}');
 		assert.equal(u.notes.at(-1)![1], "error");
 		assert.match(u.notes.at(-1)![0], /for this session only/);
@@ -151,7 +150,7 @@ test("allow dirs: No or a dismissed dialog goes on to escalation unchanged", asy
 	try {
 		for (const pick of [() => "No", () => undefined]) {
 			u.pick = pick;
-			const { exitCode, out } = await s.run(G(join(HOME, unique(".pi-sandbox-test"))));
+			const { exitCode, out } = await s.run(G(homeDir()));
 			assert.equal(exitCode, 3);
 			assert.match(out, /re-ran outside the sandbox/);
 		}
@@ -168,7 +167,8 @@ test("allow dirs: each re-run may hit another dir, which is offered next", async
 	u.pick = (o) => o[0];
 	const s = await escalating({ ui: u.ui });
 	const n = join(tmp("sandbox-count-"), "n");
-	const base = join(HOME, unique(".pi-sandbox-test"));
+	const base = homeDir();
+	made.push(...[0, 1, 2].map((i) => `${base}-${i}`)); // allow() makes them on Linux
 	try {
 		const cmd = `n=$(cat ${n} 2>/dev/null || echo 0); echo $((n + 1)) > ${n}; if [ "$n" = 3 ]; then echo ok; exit 0; fi; echo "bash: line 1: ${base}-$n/a: Operation not permitted" >&2; exit 1`;
 		const { exitCode, out } = await s.run(cmd);
@@ -184,7 +184,7 @@ test("allow dirs: each re-run may hit another dir, which is offered next", async
 test("allow dirs: with no UI, a high-rated command's message carries the sandbox.json to paste", async () => {
 	const s = await escalating({ judge: async () => HIGH });
 	try {
-		const { exitCode, out } = await s.run(G(join(HOME, unique(".pi-sandbox-test"))));
+		const { exitCode, out } = await s.run(G(homeDir()));
 		assert.equal(exitCode, 1);
 		assert.match(out, /save this as .*sandbox\.json and restart pi: \{"filesystem":\{"allowWrite":\["~\/\.pi-sandbox-test-/);
 		assert.equal(s.updates.length, 0);
@@ -200,8 +200,9 @@ test("allow dirs: PI_SANDBOX_ESCALATE=off offers nothing", async () => {
 	const s = await escalating({ ui: u.ui });
 	process.env.PI_SANDBOX_ESCALATE = "off";
 	try {
-		assert.equal((await s.run(G(join(HOME, unique(".pi-sandbox-test"))))).exitCode, 1);
+		assert.equal((await s.run(G(homeDir()))).exitCode, 1);
 		assert.equal(u.selects.length, 0);
+		assert.equal(s.offerCalls.length, 0);
 	} finally {
 		await s.shutdown();
 		restore();
@@ -214,7 +215,7 @@ test("allow: after a success (`… | cat` hides the failure) an approval widens 
 	seam.platform = () => "darwin"; // localhost is offered on macOS only
 	const s = await escalating({ ui: u.ui });
 	const n = join(tmp("sandbox-count-"), "n");
-	const D = join(HOME, unique(".pi-sandbox-test"));
+	const D = homeDir();
 	try {
 		for (const cmd of [G(D), N("BIND", LISTEN)]) {
 			const { exitCode, out } = await s.run(`echo x >> ${n}; (${cmd}) 2>&1 | cat`);
@@ -232,18 +233,19 @@ test("allow: after a success (`… | cat` hides the failure) an approval widens 
 	}
 });
 
-test("allow dirs: a success with No or a dismissed dialog returns the first run, with no classifier", async () => {
+test("allow dirs: a success with No or a dismissed dialog returns the first run, with no command re-run rating", async () => {
 	const u = fakeUI();
 	const s = await escalating({ ui: u.ui });
 	try {
 		for (const pick of [() => "No", () => undefined]) {
 			u.pick = pick;
-			const { exitCode, out } = await s.run(`(${G(join(HOME, unique(".pi-sandbox-test")))}) 2>&1 | cat`);
+			const { exitCode, out } = await s.run(`(${G(homeDir())}) 2>&1 | cat`);
 			assert.equal(exitCode, 0);
 			assert.doesNotMatch(out, /re-ran/);
 		}
 		assert.equal(u.selects.length, 2);
 		assert.equal(s.updates.length, 0);
+		assert.equal(s.offerCalls.length, 2, "one access-offer rating each");
 		assert.equal(s.calls.length, 0);
 	} finally {
 		await s.shutdown();
@@ -251,12 +253,13 @@ test("allow dirs: a success with No or a dismissed dialog returns the first run,
 	}
 });
 
-test("allow: a success with no UI gets a marker naming the parent session and the sandbox.json to paste; no classifier, one run", async () => {
+test("allow: a success with no UI gets a marker naming the parent session and the sandbox.json to paste; no command re-run rating, one run", async () => {
 	const s = await escalating({ judge: async () => LOW });
 	try {
-		const { exitCode, out } = await s.run(`(${G(join(HOME, unique(".pi-sandbox-test")))}) 2>&1 | cat`);
+		const { exitCode, out } = await s.run(`(${G(homeDir())}) 2>&1 | cat`);
 		assert.equal(exitCode, 0);
 		assert.match(out, /exited 0, but writes to ~\/\.pi-sandbox-test-\w+ needs the user's approval; not re-run\. A pi with a UI \(the parent session\) can run this same command to get the prompt; or ask the user to save this as .*sandbox\.json and restart pi: \{"filesystem":\{"allowWrite":\["~\/\.pi-sandbox-test-.*; or ask the user to allow it in .*sandbox\.json, or to run \/sandbox off in their pi/);
+		assert.equal(s.offerCalls.length, 1, "one access-offer rating");
 		assert.equal(s.calls.length, 0);
 		assert.equal(s.wrapped.length, 1);
 	} finally {
@@ -430,7 +433,7 @@ test("allow: a No sticks for the session's same parts; a dismissed dialog asks a
 	const u = fakeUI();
 	u.pick = () => "No";
 	let s = await escalating({ ui: u.ui });
-	const D = join(HOME, unique(".pi-sandbox-test"));
+	const D = homeDir();
 	try {
 		assert.equal((await s.run(G(D))).exitCode, 3);
 		assert.equal(u.selects.length, 1);
@@ -443,7 +446,7 @@ test("allow: a No sticks for the session's same parts; a dismissed dialog asks a
 		assert.equal(s.calls.length, 2);
 		assert.equal(u.selects.length, 1);
 		u.pick = () => undefined;
-		const E = join(HOME, unique(".pi-sandbox-test"));
+		const E = homeDir();
 		await s.run(G(E));
 		await s.run(G(E));
 		assert.equal(u.selects.length, 3, "Esc is not sticky");
@@ -482,5 +485,448 @@ test("macOS: allowing localhost lets the real sandbox's next wrap listen on 127.
 	} finally {
 		await s.shutdown();
 		restore();
+	}
+});
+
+/** Resolves once `f()` holds, plus one event-loop turn; throws after `ms`, so a broken wait fails instead of hanging. */
+async function until(f: () => boolean, ms = 5000) {
+	const end = Date.now() + ms;
+	while (!f()) {
+		if (Date.now() > end) throw new Error(`until: still false after ${ms} ms: ${f}`);
+		await new Promise((r) => setTimeout(r, 5));
+	}
+	await new Promise((r) => setImmediate(r));
+}
+const deferred = <T = unknown>() => {
+	let release!: (v: T) => void;
+	const p = new Promise<T>((r) => (release = r));
+	return { p, release };
+};
+
+test("offer rating: low allows the access for this session with no select, with a UI or none; after exit 0 it does not re-run; no approval is recorded", async () => {
+	const u = fakeUI();
+	let s = await escalating({ ui: u.ui, offer: async () => LOW });
+	let D = homeDir();
+	try {
+		const r = await s.run(G(D));
+		assert.equal(r.exitCode, 0);
+		assert.ok(r.out.endsWith(`[sandbox: blocked; allowed writes to ~/${basename(D)} for this session (risk low: a build cache) → re-ran in the sandbox]\nok\n`), r.out);
+		assert.equal(u.selects.length, 0);
+		assert.deepEqual(u.notes.at(-1), [`sandbox: allowed writes to ~/${basename(D)} for this session (risk low: a build cache)`, "warning"]);
+		assert.ok(s.updates[0].filesystem.allowWrite.includes(D));
+		assert.equal(existsSync(join(s.agentDir, "sandbox.json")), false);
+		assert.equal(s.calls.length, 0);
+		const o = s.offerCalls[0];
+		assert.equal(o.command, G(D));
+		assert.equal(o.access, `writes to ~/${basename(D)}`);
+		assert.ok(o.blocked[0].includes(`${D}/cache/x`));
+		for (const k of ["cwd", "root", "user", "plan", "calls", "approved", "delegated"]) assert.ok(k in o, k);
+		await s.shutdown();
+		s = await escalating({ offer: async () => LOW });
+		D = homeDir();
+		const none = await s.run(G(D));
+		assert.equal(none.exitCode, 0);
+		assert.ok(none.out.endsWith(`[sandbox: blocked; allowed writes to ~/${basename(D)} for this session (risk low: a build cache) → re-ran in the sandbox]\nok\n`), none.out);
+		await s.shutdown();
+		s = await escalating({ offer: async () => LOW });
+		D = homeDir();
+		const zero = await s.run(`(${G(D)}) 2>&1 | cat`);
+		assert.equal(zero.exitCode, 0);
+		assert.match(zero.out, /not re-run, since it exited 0/);
+		assert.equal(s.wrapped.length, 1);
+		assert.ok(s.updates[0].filesystem.allowWrite.includes(D));
+		await s.run(F);
+		assert.deepEqual(s.calls.at(-1).approved, [], "a low offer is not a user approval");
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("offer rating: high, or a classifier failure, shows the select with the reason; declined parts are not rated again, while the command still escalates", async () => {
+	const u = fakeUI();
+	let verdict: () => Promise<unknown> = async () => HIGH;
+	const s = await escalating({ ui: u.ui, offer: () => verdict() });
+	try {
+		assert.equal((await s.run(G(homeDir()))).exitCode, 3);
+		assert.match(u.selects[0]!, /\nrisk high: writes a dotfile\n\$ /);
+		verdict = () => Promise.reject(new Error("boom"));
+		await s.run(G(homeDir()));
+		assert.match(u.selects.at(-1)!, /classifier failed: boom/);
+		verdict = async () => HIGH;
+		u.pick = () => "No";
+		const D = homeDir();
+		await s.run(G(D));
+		const [offers, judged] = [s.offerCalls.length, s.calls.length];
+		assert.equal((await s.run(G(D))).exitCode, 3);
+		assert.equal(s.offerCalls.length, offers, "declined parts are not rated again");
+		assert.equal(s.calls.length, judged + 1, "the nonzero command still goes to ordinary escalation");
+		assert.equal(s.updates.length, 0);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("offer rating: a low Flutter set grants every part in one update, with no select", async () => {
+	const home = tmp("sandbox-home-");
+	const H = real(home);
+	seam.home = () => home;
+	seam.temps = () => []; // the fake home stands in for one outside every writable dir
+	seam.platform = () => "darwin";
+	const u = fakeUI();
+	const s = await escalating({ ui: u.ui, offer: async () => LOW });
+	const dart = `FileSystemException: Cannot open file, path = '${H}/.dart-tool/x.json' (OS Error: Operation not permitted, errno = 1)`;
+	const cmd = `case ":$ALLOW:" in *":${H}/.dart-tool:"*) ;; *) echo "${dart}" >&2; exit 1;; esac; [ "$BIND" = true ] || { echo '${SOCKET}' >&2; exit 1; }; [ "$TRUSTD" = true ] || { echo '${CERT}' >&2; exit 1; }; echo ok`;
+	try {
+		const r = await s.run(cmd);
+		assert.equal(r.exitCode, 0, r.out);
+		assert.equal(u.selects.length, 0);
+		assert.equal(s.updates.length, 1);
+		const c = s.updates[0];
+		assert.ok(FLUTTER.map((d) => join(H, d)).every((d) => c.filesystem.allowWrite.includes(d)));
+		assert.equal(c.network.allowLocalBinding, true);
+		assert.equal(c.enableWeakerNetworkIsolation, true);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("offer rating: a host denied, an abort, or a No from another command's dialog while the rating is pending grants nothing and re-runs nothing", async () => {
+	for (const ui of [fakeUI(), undefined]) {
+		let next = deferred();
+		const s = await escalating({ ui: ui?.ui, offer: () => next.p });
+		try {
+			const ran = s.run(G(homeDir()));
+			await until(() => s.offerCalls.length === 1);
+			assert.equal(await s.got.ask!({ host: "h1", port: 443 }), false);
+			next.release(LOW);
+			const r = await ran;
+			assert.equal(r.exitCode, 1);
+			assert.doesNotMatch(r.out, /re-ran|outside\n|ok\n/);
+			assert.equal(s.updates.length, 0);
+			assert.equal(s.wrapped.length, 1);
+			assert.equal(s.calls.length, 0);
+		} finally {
+			await s.shutdown();
+			restore();
+		}
+	}
+	let next = deferred();
+	let s = await escalating({ offer: () => next.p });
+	try {
+		const ac = new AbortController();
+		let out = "";
+		const ran = sandboxedBash.exec(G(homeDir()), s.ctx.cwd, { onData: (d) => (out += d), signal: ac.signal, timeout: 30 });
+		await until(() => s.offerCalls.length === 1);
+		ac.abort();
+		next.release(LOW);
+		assert.equal((await ran).exitCode, 1);
+		assert.doesNotMatch(out, /re-ran|outside\n|ok\n/);
+		assert.equal(s.updates.length, 0);
+		assert.equal(s.wrapped.length, 1);
+		await s.run(F);
+		assert.deepEqual(s.calls.at(-1).approved, []);
+		await s.shutdown();
+		const u = fakeUI();
+		u.pick = () => "No";
+		const first = deferred();
+		const verdicts = [first.p, Promise.resolve(HIGH)];
+		s = await escalating({ ui: u.ui, offer: () => verdicts.shift()! });
+		const D = homeDir();
+		const one = s.run(G(D));
+		await until(() => s.offerCalls.length === 1);
+		const two = await s.run(G(D));
+		assert.equal(u.selects.length, 1);
+		assert.equal(two.exitCode, 3, "the declined one goes on to escalation");
+		first.release(LOW);
+		const r = await one;
+		assert.equal(r.exitCode, 1);
+		assert.doesNotMatch(r.out, /re-ran|outside\n|ok\n/);
+		assert.equal(s.updates.length, 0);
+		assert.equal(s.wrapped.length, 2);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+test("offer rating: each sandboxed re-run that hits another dir is rated and granted in turn, with no escalation or approval", async () => {
+	const u = fakeUI();
+	const s = await escalating({ ui: u.ui, offer: async () => LOW });
+	const n = join(tmp("sandbox-count-"), "n");
+	const base = homeDir();
+	made.push(...[0, 1, 2].map((i) => `${base}-${i}`)); // allow() makes them on Linux
+	try {
+		const cmd = `n=$(cat ${n} 2>/dev/null || echo 0); echo $((n + 1)) > ${n}; if [ "$n" = 3 ]; then echo ok; exit 0; fi; echo "bash: line 1: ${base}-$n/a: Operation not permitted" >&2; exit 1`;
+		const { exitCode, out } = await s.run(cmd);
+		assert.equal(exitCode, 0, out);
+		assert.match(out, /ok\n$/);
+		assert.equal(s.offerCalls.length, 3);
+		assert.deepEqual(s.offerCalls.map((o) => o.access), [0, 1, 2].map((i) => `writes to ~/${basename(base)}-${i}`));
+		assert.equal(s.updates.length, 3);
+		assert.equal(s.wrapped.length, 4, "every run sandboxed");
+		assert.equal(u.selects.length, 0);
+		assert.equal(s.calls.length, 0);
+		await s.run(F);
+		assert.deepEqual(s.calls.at(-1).approved, []);
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
+// Lets every pending promise chain run (the fake runtime's work is already done by then).
+const drain = async () => {
+	for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+};
+const OFF_MARKER = "[sandbox: blocked; the sandbox was turned off while this was pending; not re-run: run it again]";
+
+/** A fresh session on a fake home (nothing under the real home is written): offer ratings come from `verdicts` in order, then HIGH;
+ * each select returns its own deferred answer. `exec` runs a command with an optional abort signal, tracked for `settle`. */
+async function review(verdicts: Promise<unknown>[], { withUI = true } = {}) {
+	const home = tmp("sandbox-home-");
+	seam.home = () => home;
+	seam.temps = () => [];
+	const u = fakeUI();
+	const sels: { p: Promise<string | undefined>; release: (v: string | undefined) => void }[] = [];
+	const choices: string[][] = [];
+	(u.ui as any).select = (t: string, o: string[]) => (u.selects.push(t), choices.push(o), sels.push(deferred<string | undefined>()), sels.at(-1)!.p);
+	// A verdict still pending when its command is aborted (by settle) rejects, so no rating is left hanging.
+	const offer = (_input: unknown, signal?: AbortSignal) =>
+		new Promise<unknown>((res, rej) => {
+			signal?.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
+			(verdicts.shift() ?? Promise.resolve(HIGH)).then(res, rej);
+		});
+	const s = await escalating({ ui: withUI ? u.ui : undefined, offer });
+	const pending: Promise<unknown>[] = [];
+	const stops: AbortController[] = [];
+	const exec = (command: string, signal?: AbortSignal) => {
+		let out = "";
+		let done = false;
+		const stop = new AbortController();
+		stops.push(stop);
+		const p = sandboxedBash.exec(command, s.ctx.cwd, { onData: (d) => (out += d), signal: signal ? AbortSignal.any([signal, stop.signal]) : stop.signal, timeout: 30 }).then(({ exitCode }) => ((done = true), { exitCode, out }));
+		pending.push(p);
+		return Object.assign(p, { done: () => done });
+	};
+	// Ends whatever a failed assertion left open: dialogs dismissed, commands (and their pending ratings) aborted, bounded.
+	const settle = async () => {
+		sels.forEach((d) => d.release(undefined));
+		stops.forEach((c) => c.abort());
+		await Promise.race([Promise.allSettled(pending), new Promise((r) => setTimeout(r, 5000))]);
+		await s.shutdown();
+		restore();
+	};
+	const sandboxCmd = (arg: string) => s.commands.sandbox.handler(arg, { hasUI: true, ui: { confirm: async () => true, notify: () => {} } });
+	return { s, u, sels, choices, exec, settle, sandboxCmd, D: join(real(home), unique(".tool")) };
+}
+
+test("offer review: a low offer waits for an open dialog on the same access; its No holds for both, its Once lets both re-run", async () => {
+	for (const answer of ["No", "Once"]) {
+		const low = deferred();
+		const r = await review([Promise.resolve(HIGH), low.p]);
+		try {
+			const a = r.exec(G(r.D));
+			await until(() => r.u.selects.length === 1);
+			const b = r.exec(G(r.D));
+			await until(() => r.s.offerCalls.length === 2);
+			low.release(LOW);
+			await drain();
+			assert.equal(b.done(), false, "the low command waits for the open dialog");
+			assert.equal(r.s.updates.length, 0);
+			assert.equal(r.s.wrapped.length, 2);
+			r.sels[0]!.release(answer === "No" ? "No" : r.choices[0]![0]);
+			const [ra, rb] = [await a, await b];
+			if (answer === "No") {
+				assert.equal(rb.exitCode, 1, rb.out);
+				assert.doesNotMatch(rb.out, /re-ran|ok\n|outside\n/);
+				assert.equal(ra.exitCode, 3, "the dialog's own command goes on to ordinary escalation");
+				assert.equal(r.s.calls.length, 1, "the low command has no escalation rating of its own");
+				assert.equal(r.s.updates.length, 0);
+				assert.equal(r.s.wrapped.length, 2);
+			} else {
+				for (const x of [ra, rb]) assert.ok(x.exitCode === 0 && x.out.endsWith("ok\n"), x.out);
+				assert.match(rb.out, /\(risk low: a build cache\) → re-ran in the sandbox\]\nok\n$/);
+				assert.equal(r.s.wrapped.length, 4, "both re-runs sandboxed");
+				assert.equal(r.s.calls.length, 0);
+			}
+		} finally {
+			await r.settle();
+		}
+	}
+});
+
+test("offer review: a low offer waits for every overlapping dialog, not just the newest", async () => {
+	const low = deferred();
+	const r = await review([Promise.resolve(HIGH), Promise.resolve(HIGH), low.p]);
+	try {
+		const a1 = r.exec(G(r.D));
+		await until(() => r.u.selects.length === 1);
+		const a2 = r.exec(G(r.D));
+		await until(() => r.u.selects.length === 2);
+		const b = r.exec(G(r.D));
+		await until(() => r.s.offerCalls.length === 3);
+		low.release(LOW);
+		await drain();
+		r.sels[1]!.release(undefined); // dismiss the newer
+		assert.equal((await a2).exitCode, 3);
+		await drain();
+		assert.equal(b.done(), false, "the older dialog is still open");
+		assert.equal(r.s.updates.length, 0);
+		r.sels[0]!.release("No");
+		const rb = await b;
+		assert.equal(rb.exitCode, 1);
+		assert.doesNotMatch(rb.out, /re-ran|ok\n|outside\n/);
+		assert.equal((await a1).exitCode, 3);
+		assert.equal(r.s.updates.length, 0);
+	} finally {
+		await r.settle();
+	}
+});
+
+test("offer review: the wait's deadline or the waiting command's abort grants nothing and leaves the dialog open; a late answer to an aborted dialog does nothing", async () => {
+	// The deadline: the waiter gives up, the owner's dialog stays open and still decides.
+	let low = deferred();
+	let r = await review([Promise.resolve(HIGH), low.p]);
+	try {
+		const wait = new AbortController();
+		seam.offerWait = () => wait.signal;
+		const a = r.exec(G(r.D));
+		await until(() => r.u.selects.length === 1);
+		const b = r.exec(G(r.D));
+		await until(() => r.s.offerCalls.length === 2);
+		low.release(LOW);
+		await drain();
+		wait.abort();
+		const rb = await b;
+		assert.equal(rb.exitCode, 1);
+		assert.match(rb.out, /is still open; not re-run: answer it, then run this again\]\n$/);
+		assert.equal(r.s.updates.length, 0);
+		assert.equal(r.s.wrapped.length, 2);
+		await drain();
+		assert.equal(a.done(), false, "the owner is not timed out");
+		r.sels[0]!.release(r.choices[0]![0]);
+		const ra = await a;
+		assert.ok(ra.exitCode === 0 && ra.out.endsWith("ok\n"), "no sticky No from the waiter");
+	} finally {
+		await r.settle();
+	}
+	// The waiting command aborted.
+	low = deferred();
+	r = await review([Promise.resolve(HIGH), low.p]);
+	try {
+		const a = r.exec(G(r.D));
+		await until(() => r.u.selects.length === 1);
+		const ac = new AbortController();
+		const b = r.exec(G(r.D), ac.signal);
+		await until(() => r.s.offerCalls.length === 2);
+		low.release(LOW);
+		await drain();
+		ac.abort();
+		const rb = await b;
+		assert.equal(rb.exitCode, 1);
+		assert.doesNotMatch(rb.out, /re-ran|ok\n|outside\n/);
+		assert.equal(r.s.updates.length, 0);
+		await drain();
+		assert.equal(a.done(), false);
+	} finally {
+		await r.settle();
+	}
+	// The dialog's own command aborted: a late Yes does nothing, and a new low offer is not held up.
+	r = await review([Promise.resolve(HIGH), Promise.resolve(LOW)]);
+	try {
+		const ac = new AbortController();
+		const a = r.exec(G(r.D), ac.signal);
+		await until(() => r.u.selects.length === 1);
+		ac.abort();
+		assert.equal((await a).exitCode, 1);
+		r.sels[0]!.release(r.choices[0]![0]);
+		await drain();
+		assert.equal(r.s.updates.length, 0);
+		assert.equal(r.s.wrapped.length, 1);
+		const c = await r.exec(G(r.D));
+		assert.ok(c.exitCode === 0 && c.out.endsWith("ok\n"), c.out);
+		assert.equal(r.s.updates.length, 1);
+	} finally {
+		await r.settle();
+	}
+});
+
+test("offer review: a confirmed /sandbox off stops a pending offer: no grant, re-run, save or approval, also after /sandbox on", async () => {
+	for (const withUI of [false, true])
+		for (const reon of [false, true]) {
+			const low = deferred();
+			const r = await review(withUI ? [] : [low.p], { withUI });
+			const label = `${withUI ? "UI, Always" : "no UI, low"}${reon ? ", on again" : ""}`;
+			try {
+				const a = r.exec(G(r.D));
+				await until(() => (withUI ? r.u.selects.length === 1 : r.s.offerCalls.length === 1));
+				await r.sandboxCmd("off");
+				if (reon) await r.sandboxCmd("on");
+				if (withUI) r.sels[0]!.release(r.choices[0]![1]);
+				else low.release(LOW);
+				const ra = await a;
+				assert.equal(ra.exitCode, 1, label);
+				assert.ok(ra.out.endsWith(`${OFF_MARKER}\n`), `${label}: ${ra.out}`);
+				assert.doesNotMatch(ra.out, /re-ran|allowed/, label);
+				assert.equal(r.s.wrapped.length, 1, label);
+				assert.equal(r.s.calls.length, 0, `${label}: no ordinary escalation`);
+				assert.equal(r.s.updates.length, 0, label);
+				assert.equal(existsSync(join(r.s.agentDir, "sandbox.json")), false, label);
+				if (!reon) await r.sandboxCmd("on");
+				await r.s.run(F);
+				assert.deepEqual(r.s.calls.at(-1).approved, [], `${label}: no recorded approval`);
+			} finally {
+				await r.settle();
+			}
+		}
+});
+
+test("offer review: a /sandbox on while already on keeps the pending offer stoppable by the next /sandbox off", async () => {
+	const low = deferred();
+	const r = await review([low.p], { withUI: false });
+	try {
+		const a = r.exec(G(r.D));
+		await until(() => r.s.offerCalls.length === 1);
+		await r.sandboxCmd("on");
+		await r.sandboxCmd("off");
+		low.release(LOW);
+		const ra = await a;
+		assert.equal(ra.exitCode, 1, ra.out);
+		assert.ok(ra.out.endsWith(`${OFF_MARKER}\n`), ra.out);
+		assert.doesNotMatch(ra.out, /re-ran|allowed|outside\n/);
+		assert.equal(r.s.wrapped.length, 1);
+		assert.equal(r.s.updates.length, 0);
+		await r.sandboxCmd("on");
+	} finally {
+		await r.settle();
+	}
+});
+
+test("offer review: a dialog that opens while a low offer's overlap check returns is still waited for, and its No holds", async () => {
+	const [low, high] = [deferred(), deferred()];
+	const r = await review([low.p, high.p]);
+	try {
+		const a = r.exec(G(r.D));
+		await until(() => r.s.offerCalls.length === 1); // so A, not B, gets the first (LOW) verdict
+		const b = r.exec(G(r.D));
+		await until(() => r.s.offerCalls.length === 2);
+		// Both ratings finish in the same turn, LOW first: the low one's last check sees no dialog, then B's opens.
+		low.release(LOW);
+		high.release(HIGH);
+		await until(() => r.u.selects.length === 1);
+		await drain();
+		assert.equal(a.done(), false, "the low command waits for the dialog that opened");
+		assert.equal(r.s.updates.length, 0);
+		r.sels[0]!.release("No");
+		const [ra, rb] = [await a, await b];
+		assert.equal(ra.exitCode, 1, ra.out);
+		assert.doesNotMatch(ra.out, /re-ran|ok\n|outside\n/);
+		assert.equal(rb.exitCode, 3, "the dialog's own command goes on to ordinary escalation");
+		assert.equal(r.s.updates.length, 0);
+	} finally {
+		await r.settle();
 	}
 });

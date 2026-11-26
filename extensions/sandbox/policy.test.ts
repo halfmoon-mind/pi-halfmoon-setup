@@ -161,6 +161,7 @@ test("a pi with no UI writes its cwd only inside the root it inherited, so a sub
 test("sudo, git push, rm -r and .env writes ask first; no UI blocks them", async () => {
 	const project = tmp("sandbox-project-");
 	seam.load = async () => (await fake()).runtime;
+	seam.judge = async () => HIGH; // git push and rm -r are rated first: high asks
 	delete process.env.PI_SANDBOX_ROOT;
 	const s = await start(project);
 	const asked: string[] = [];
@@ -237,6 +238,7 @@ test("PI_SANDBOX=off keeps risky confirmations", async () => {
 	const project = tmp("sandbox-project-");
 	process.env.PI_SANDBOX = "off";
 	seam.load = async () => (await fake()).runtime;
+	seam.judge = async () => LOW; // never asked: with the sandbox off, rm -r is not rated
 	const s = await start(project);
 	try {
 		assert.match((await s.gate("bash", { command: "rm -r x" }))!.reason, /no UI/);
@@ -570,7 +572,7 @@ test("macOS: loaded by pi's own extension loader, the registered bash runs sandb
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	delete process.env.PI_SANDBOX_ROOT;
 	const cwd = process.cwd();
-	const ctx = { cwd: project, hasUI: false, sessionManager: { getEntries: () => [], getSessionId: () => "s", getSessionFile: () => undefined } };
+	const ctx = { cwd: project, hasUI: false, sessionManager: { getEntries: () => [], getBranch: () => [], getSessionId: () => "s", getSessionFile: () => undefined } };
 	let sb: any;
 	try {
 		process.chdir(project); // that copy's seam anchors at process.cwd(), as in a real pi

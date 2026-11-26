@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { sandboxedBash } from "./sandbox/index.ts";
+import { bashFor, sandboxedBash } from "./sandbox/index.ts";
 
 type RenderResult = NonNullable<ToolDefinition["renderResult"]>;
 type RenderCall = NonNullable<ToolDefinition["renderCall"]>;
@@ -152,7 +152,9 @@ export default function (pi: ExtensionAPI) {
 		parameters,
 		// A call without one still runs (and shows its command): validation comes after this.
 		prepareArguments: (args: any) => (args && typeof args === "object" && args.description === undefined ? { ...args, description: "" } : args),
-		execute: (id, params, ...rest) => bash.execute(id, { ...params, timeout: params.timeout ?? TIMEOUT }, ...rest),
+		// Each call's own operations, keyed by the validated params (before the copy) so the sandbox finds its gate verdict.
+		execute: (id, params, ...rest) =>
+			createBashToolDefinition(process.cwd(), { operations: bashFor(params) }).execute(id, { ...params, timeout: params.timeout ?? TIMEOUT }, ...rest),
 		renderCall: shortCallWhenCollapsed(bash.renderCall!),
 		renderResult: hideWhenCollapsed(bash.renderResult!),
 	});

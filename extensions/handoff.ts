@@ -15,6 +15,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { gated, lintPlan } from "./checks.ts";
+import { KICKOFF_START, kickoff, PARALLEL, PLAN_BODY } from "./handoff-kickoff.ts";
 
 export const FULL_PERCENT = 50;
 export const PLAN_ENTRY = "handoff-plan";
@@ -96,18 +97,7 @@ export function reviewed(branch: Entry[], path: string): boolean {
 	);
 }
 
-const KICKOFF_START = "Implement the plan in ";
-// Workers in one parallel call share the working tree and the plan file, so each edits only its step's files and the caller ticks.
-const PARALLEL =
-	"Steps tagged with the same (parallel A) letter run as one subagent call: a `tasks` array with one worker per step, each told its step and files, to edit only those files, and not to edit the plan file. When it returns, run each step's check and tick the steps that pass yourself.";
-export const kickoff = (path: string) =>
-	[
-		`${KICKOFF_START}${path}. This session starts empty, so read the plan first; it is your whole context, except that its \`## Sources\`, when it has them, are the originals to read when a requirement needs more than its quote.`,
-		"Build it yourself, step by step in order. Tick a step ([x]) in the plan file once its check passes.",
-		PARALLEL,
-		`Call handoff with ${path} between steps, so the rest moves to a fresh session if this one fills up.`,
-		"Run every command under the plan's success criteria and show its output. Do not finish while one fails.",
-	].join("\n");
+export { kickoff };
 
 // Sent beside each user message: as the tool's guidelines the model read them as applying only once a plan
 // existed, and as a system prompt section it overlooked them; next to the request it weighs them.
@@ -205,7 +195,7 @@ export default function (pi: ExtensionAPI) {
 			const path = args.trim().replace(/^@/, "");
 			if (!path || !existsSync(resolve(ctx.cwd, path))) return ctx.ui.notify(`usage: /handoff <plan file> (no file at ${path || "?"})`, "warning");
 			// The router classifies a session from its first message, so the plan rides along; the file stays the one to tick.
-			const message = `${kickoff(path)}\n\nThe plan as of this handoff (tick steps in the file, not here):\n\n${readFileSync(resolve(ctx.cwd, path), "utf8")}`;
+			const message = `${kickoff(path)}${PLAN_BODY}${readFileSync(resolve(ctx.cwd, path), "utf8")}`;
 			await ctx.newSession({
 				parentSession: ctx.sessionManager.getSessionFile(),
 				setup: async (sm) => {

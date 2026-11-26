@@ -33,7 +33,8 @@ export function ownCommondir(root: string) {
 // under one (`.git`, where `config` and `hooks` are) would leave the real ones unprotected.
 export const PROTECTED_CWD = /\/(\.git|\.claude|\.vscode|\.idea)(\/|$)/i;
 
-/** Test seam: how the runtime loads, which temp dirs are writable, the dir the runtime anchors its protections at, and who rates a blocked command. */
+/** Test seam: how the runtime loads, which temp dirs are writable, the dir the runtime anchors its protections at, and who rates a blocked
+ * command, an unknown host and an access offer (writes to dirs, localhost binding, trustd) before its dialog, and how long a low offer waits. */
 export const seam = {
 	load: (): Promise<Runtime> => import("@anthropic-ai/sandbox-runtime"),
 	temps: () => [tmpdir(), "/tmp"],
@@ -41,7 +42,9 @@ export const seam = {
 	platform: () => process.platform,
 	judge: (input: object, signal?: AbortSignal): Promise<unknown> => Promise.reject(new Error("no classifier")), // set by index.ts, which holds the classifier and its session
 	judgeHost: (input: object, signal?: AbortSignal): Promise<unknown> => Promise.reject(new Error("no classifier")), // set by index.ts, which holds the classifier and its session
+	judgeOffer: (input: object, signal?: AbortSignal): Promise<unknown> => Promise.reject(new Error("no classifier")), // set by index.ts, which holds the classifier and its session
 	home: () => homedir(),
+	offerWait: (): AbortSignal => AbortSignal.timeout(60_000), // how long a low offer waits for another command's open dialog on the same access
 };
 
 /** The path the OS opens for p, following symlinks even when they dangle. Throws on a symlink loop. */
@@ -149,6 +152,9 @@ export function merge(base: Policy, extra: unknown, root: string): Policy {
 	}
 	return base;
 }
+
+/** The risky() rules the classifier rates first while the sandbox is on; the rest always ask. */
+export const RATED = new Set(["bash runs git push", "bash deletes recursively (rm -r)"]);
 
 /** What the user should confirm first; a speed bump, not a boundary. */
 export function risky(tool: string, input: Record<string, unknown>, cwd: string): string | undefined {

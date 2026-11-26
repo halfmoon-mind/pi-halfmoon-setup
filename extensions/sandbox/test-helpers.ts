@@ -17,12 +17,19 @@ const cwd0 = seam.cwd;
 const platform0 = seam.platform;
 const judge0 = seam.judge;
 const judgeHost0 = seam.judgeHost;
+const judgeOffer0 = seam.judgeOffer;
 const home0 = seam.home;
+const offerWait0 = seam.offerWait;
+// index.ts's process-global record of whether PI_SANDBOX_ROOT was set before any start(): start() installs a fresh one per simulated pi.
+const ORIGIN = Symbol.for("pi-halfmoon-setup/sandbox-origin");
+const origin0 = (globalThis as any)[ORIGIN];
 export const macOS = { skip: process.platform !== "darwin" && "the real sandbox runs on macOS here" };
 export const unique = (name: string) => `${name}-${randomBytes(6).toString("hex")}`;
 // Every fixture dir, removed once all tests (and their runtime shutdowns) are done.
 export const made: string[] = [];
 export const tmp = (prefix: string) => (made.push(mkdtempSync(join(tmpdir(), prefix))), made.at(-1)!);
+// A dir under the real home (offers only cover home dirs), removed with the rest; Linux allow() really makes it.
+export const homeDir = () => (made.push(join(HOME, unique(".pi-sandbox-test"))), made.at(-1)!);
 after(() => made.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 // A fake runtime for policy tests: the real config schema, a SandboxManager that starts nothing. A wrapped command
@@ -56,15 +63,21 @@ export async function start(cwd: string, { ui, files = {}, extra = {} }: { ui?: 
 	const tools: Record<string, any> = {};
 	const commands: Record<string, any> = {};
 	const pi = { on: (event: string, h: any) => (handlers[event] ??= []).push(h), registerTool: (t: any) => (tools[t.name] = t), registerCommand: (name: string, c: any) => (commands[name] = c) };
+	(globalThis as any)[ORIGIN] = { inherited: process.env.PI_SANDBOX_ROOT !== undefined }; // a new process
 	sandbox(pi as any);
 	compactTools(pi as any);
-	const ctx = { cwd, hasUI: !!ui, ui, mode: ui ? "tui" : "print", sessionManager: { getEntries: () => [], getSessionId: () => "s", getSessionFile: () => undefined }, ...extra };
+	const ctx = { cwd, hasUI: !!ui, ui, mode: ui ? "tui" : "print", sessionManager: { getEntries: () => [], getBranch: () => [], getSessionId: () => "s", getSessionFile: () => undefined }, ...extra };
 	for (const h of handlers.session_start) await h({}, ctx);
 	const gate = async (toolName: string, input: any, c: any = ctx) => (await handlers.tool_call[0]({ toolName, input }, c)) as { block: true; reason: string } | undefined;
 	const shutdown = async () => {
 		for (const h of handlers.session_shutdown) await h({ reason: "quit" }, ctx);
 	};
-	return { gate, tools, commands, ctx, shutdown, agentDir: process.env.PI_CODING_AGENT_DIR };
+	// A new session in the same process: the origin record and the root this process wrote stay.
+	const restart = async () => {
+		await shutdown();
+		for (const h of handlers.session_start) await h({}, ctx);
+	};
+	return { gate, tools, commands, ctx, shutdown, restart, agentDir: process.env.PI_CODING_AGENT_DIR };
 }
 
 export async function bash(command: string, cwd: string) {
@@ -82,26 +95,33 @@ export function restore() {
 	seam.platform = platform0;
 	seam.judge = judge0;
 	seam.judgeHost = judgeHost0;
+	seam.judgeOffer = judgeOffer0;
 	seam.home = home0;
+	seam.offerWait = offerWait0;
+	(globalThis as any)[ORIGIN] = origin0;
 }
 
 // Denied in the (fake) sandbox, exit 3 outside it.
 export const F = `if [ -n "$IN_SANDBOX" ]; then echo 'x: Operation not permitted' >&2; exit 1; fi; echo outside; exit 3`;
 export const LOW = { risk: "low", reason: "a build cache" };
 export const HIGH = { risk: "high", reason: "writes a dotfile" };
+// Denied in the (fake) sandbox under D until D is writable (in $ALLOW); exit 3 outside it.
+export const G = (D: string) => `case ":$ALLOW:" in *":${D}:"*) echo ok; exit 0;; esac; echo "bash: line 1: ${D}/cache/x: Operation not permitted" >&2; if [ -n "$IN_SANDBOX" ]; then exit 1; fi; echo outside; exit 3`;
 
 /** A session on the fake runtime whose judges record their inputs; `null` keeps the default classifier. */
-export async function escalating({ judge = async () => LOW, host = async () => HIGH, ui, extra, violations, files }: { judge?: ((input: any, signal?: AbortSignal) => Promise<unknown>) | null; host?: ((input: any) => Promise<unknown>) | null; ui?: any; extra?: Record<string, unknown>; violations?: (id: string) => { line: string }[]; files?: Record<string, string> } = {}) {
+export async function escalating({ judge = async () => LOW, host = async () => HIGH, offer = async () => HIGH, ui, extra, violations, files }: { judge?: ((input: any, signal?: AbortSignal) => Promise<unknown>) | null; host?: ((input: any) => Promise<unknown>) | null; offer?: ((input: any, signal?: AbortSignal) => Promise<unknown>) | null; ui?: any; extra?: Record<string, unknown>; violations?: (id: string) => { line: string }[]; files?: Record<string, string> } = {}) {
 	const project = tmp("sandbox-project-");
 	const f = await fake(undefined, violations);
 	seam.load = async () => f.runtime;
 	const calls: any[] = [];
 	const hostCalls: any[] = [];
-	if (judge) seam.judge = async (input, signal) => (calls.push(input), judge(input, signal));
-	if (host) seam.judgeHost = async (input) => (hostCalls.push(input), host(input));
+	const offerCalls: any[] = [];
+	seam.judge = judge ? async (input, signal) => (calls.push(input), judge(input, signal)) : judge0;
+	seam.judgeHost = host ? async (input) => (hostCalls.push(input), host(input)) : judgeHost0;
+	seam.judgeOffer = offer ? async (input, signal) => (offerCalls.push(input), offer(input, signal)) : judgeOffer0;
 	delete process.env.PI_SANDBOX_ROOT;
 	const s = await start(project, { ui, extra, files });
-	return { ...s, ...f, calls, hostCalls, run: (command: string) => bash(command, project) };
+	return { ...s, ...f, calls, hostCalls, offerCalls, run: (command: string) => bash(command, project) };
 }
 
 /** A UI whose confirm gives what `answer` returns now and select what `pick` does, recording every notify and select title. */
