@@ -19,7 +19,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  scout["scout<br/>Haiku"] --> planner["planner<br/>Opus"] --> pr["plan-reviewer<br/>GPT-6.1 Sol"] --> worker["worker<br/>Opus"] --> reviewer["reviewer<br/>GPT-6.1 Sol"]
+  scout["scout<br/>Haiku"] --> planner["planner<br/>Opus"] --> pr["plan-reviewer<br/>GPT-6.2 Sol"] --> worker["worker<br/>Opus"] --> reviewer["reviewer<br/>GPT-6.2 Sol"]
 ```
 
 **목차:** [주요 기능](#주요-기능) · [빠른 시작](#빠른-시작) · [사용법](#사용법) · [모델 선택](#모델-선택) · [문제 해결](#문제-해결) · [개발](#개발)
@@ -128,7 +128,7 @@ pi 입력창에서 프롬프트 명령어 뒤에 작업을 적습니다.
 | `/scout-and-plan` | scout → planner → plan-reviewer | 코드 탐색과 리뷰를 거친 구현 계획. 구현은 하지 않음 |
 | `/implement` | scout → planner → plan-reviewer → worker | 탐색, 계획, 계획 리뷰를 거쳐 구현 |
 | `/implement-and-review` | worker → reviewer → worker | 구현, 리뷰, Critical 항목 수정 |
-| `/deep` | deep-worker (에스컬레이션 시 → worker) | 논리 중심 목표 하나를 GPT-6.1 Sol로 처리하고, 근거로 정할 수 없는 결정은 worker에게 넘김 |
+| `/deep` | deep-worker (에스컬레이션 시 → worker) | 논리 중심 목표 하나를 GPT-6.2 Sol로 처리하고, 근거로 정할 수 없는 결정은 worker에게 넘김 |
 
 `/scout-and-plan`, `/implement`, `/implement-and-review`는 `subagent` 도구의 `chain` 모드를 쓰고 `{previous}`로 앞 단계의 출력을 넘깁니다. `/deep`은 `deep-worker`를 한 번 호출하고, 출력이 `ESCALATE:`로 시작하면 `worker`를 호출합니다. 도구는 단일 에이전트(`agent` + `task`)와 병렬 실행(`tasks`)도 지원합니다.
 
@@ -178,10 +178,10 @@ bash는 OS 샌드박스 안에서 실행되어 프로젝트와 임시 디렉터�
 |---|---|---|
 | `scout` | `pi-claude-cli/claude-haiku:high` | 코드를 읽고 관련 파일과 핵심 맥락을 정리 |
 | `planner` | `pi-claude-cli/claude-opus:high` | 탐색 결과와 요구사항으로 구현 계획 작성 |
-| `plan-reviewer` | `openai/gpt-6.1-sol:xhigh` | worker가 실행하기 전에 다른 모델 계열로 계획의 막히는 문제를 고침 |
+| `plan-reviewer` | `openai/gpt-6.2-sol:high` | worker가 실행하기 전에 다른 모델 계열로 계획의 막히는 문제를 고침 |
 | `worker` | `pi-claude-cli/claude-opus:high` | 할당된 작업을 구현 |
-| `deep-worker` | `openai/gpt-6.1-sol:medium` | 테스트로 확인할 수 있는 논리 중심 목표 하나를 구현하거나 `ESCALATE`로 답함 (oh-my-openagent의 deep-low 레인) |
-| `reviewer` | `openai/gpt-6.1-sol:high` | 다른 모델 계열로 코드 품질과 보안 리뷰 |
+| `deep-worker` | `openai/gpt-6.2-sol:medium` | 테스트로 확인할 수 있는 논리 중심 목표 하나를 구현하거나 `ESCALATE`로 답함 (oh-my-openagent의 deep-low 레인) |
+| `reviewer` | `openai/gpt-6.2-sol:high` | 다른 모델 계열로 코드 품질과 보안 리뷰 |
 
 - Claude 모델명은 pi가 해석하는 부분 이름입니다. 역할과 모델은 [`agents/`](agents/)의 Markdown 파일에서 설정합니다.
 - `subagent` 도구가 에이전트 목록과 `description`을 모델에 보여 주므로, 메인 모델이 스스로 위임할 수 있습니다(예: 논리 중심 하위 작업을 `deep-worker`에). 에이전트를 추가한 뒤에는 `/reload`를 실행하세요.

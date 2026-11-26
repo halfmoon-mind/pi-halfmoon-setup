@@ -19,7 +19,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  scout["scout<br/>Haiku"] --> planner["planner<br/>Opus"] --> pr["plan-reviewer<br/>GPT-6.1 Sol"] --> worker["worker<br/>Opus"] --> reviewer["reviewer<br/>GPT-6.1 Sol"]
+  scout["scout<br/>Haiku"] --> planner["planner<br/>Opus"] --> pr["plan-reviewer<br/>GPT-6.2 Sol"] --> worker["worker<br/>Opus"] --> reviewer["reviewer<br/>GPT-6.2 Sol"]
 ```
 
 **Contents:** [Features](#features) · [Quick start](#quick-start) · [Usage](#usage) · [Model selection](#model-selection) · [Troubleshooting](#troubleshooting) · [Development](#development)
@@ -128,7 +128,7 @@ Type a prompt command followed by the task:
 | `/scout-and-plan` | scout → planner → plan-reviewer | Exploration and a reviewed plan, no implementation |
 | `/implement` | scout → planner → plan-reviewer → worker | Implementation after exploration, planning, and plan review |
 | `/implement-and-review` | worker → reviewer → worker | Implementation, review, and fixes for Critical issues |
-| `/deep` | deep-worker (→ worker if it escalates) | One logic-heavy goal on GPT-6.1 Sol, handed to the worker when evidence cannot settle a decision |
+| `/deep` | deep-worker (→ worker if it escalates) | One logic-heavy goal on GPT-6.2 Sol, handed to the worker when evidence cannot settle a decision |
 
 `/scout-and-plan`, `/implement` and `/implement-and-review` use the `subagent` tool's `chain` mode, passing each step's output to the next with `{previous}`; `/deep` is one `deep-worker` call, then a `worker` call if its output starts with `ESCALATE:`. The tool also supports a single agent (`agent` + `task`) and parallel runs (`tasks`).
 
@@ -178,10 +178,10 @@ When classification fails, it uses `complex` on Opus. See [docs/routing.md](docs
 |---|---|---|
 | `scout` | `pi-claude-cli/claude-haiku:high` | Reads the code and summarizes relevant files and key context |
 | `planner` | `pi-claude-cli/claude-opus:high` | Writes an implementation plan from the exploration and requirements |
-| `plan-reviewer` | `openai/gpt-6.1-sol:xhigh` | Fixes blockers in the plan with a different model family before the worker runs it |
+| `plan-reviewer` | `openai/gpt-6.2-sol:high` | Fixes blockers in the plan with a different model family before the worker runs it |
 | `worker` | `pi-claude-cli/claude-opus:high` | Implements the assigned task |
-| `deep-worker` | `openai/gpt-6.1-sol:medium` | Delivers one logic-heavy goal that tests can settle, or replies `ESCALATE` (oh-my-openagent's deep-low lane) |
-| `reviewer` | `openai/gpt-6.1-sol:high` | Reviews code quality and security with a different model family |
+| `deep-worker` | `openai/gpt-6.2-sol:medium` | Delivers one logic-heavy goal that tests can settle, or replies `ESCALATE` (oh-my-openagent's deep-low lane) |
+| `reviewer` | `openai/gpt-6.2-sol:high` | Reviews code quality and security with a different model family |
 
 - Claude model names are partial names that pi resolves. Set roles and models in [`agents/`](agents/).
 - The `subagent` tool lists agents with their `description`, so the main model can delegate on its own (e.g. a logic-heavy subtask to `deep-worker`). Run `/reload` after adding an agent.

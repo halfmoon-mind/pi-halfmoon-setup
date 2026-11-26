@@ -24,10 +24,10 @@ test("the package's agents load with their models; user and project agents with 
 	const models = Object.fromEntries(discoverAgents(cwd, "both").agents.map((a) => [a.name, `${a.source} ${a.model}`]));
 	assert.deepEqual(models, {
 		scout: "user user/model",
-		"deep-worker": "user openai/gpt-6.1-sol:medium",
+		"deep-worker": "user openai/gpt-6.2-sol:medium",
 		planner: "project project/model",
-		"plan-reviewer": "user openai/gpt-6.1-sol:xhigh",
-		reviewer: "user openai/gpt-6.1-sol:high",
+		"plan-reviewer": "user openai/gpt-6.2-sol:high",
+		reviewer: "user openai/gpt-6.2-sol:high",
 		worker: "user pi-claude-cli/claude-opus:high",
 	});
 });

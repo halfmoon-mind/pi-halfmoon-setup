@@ -1,5 +1,5 @@
 ---
-description: Deep worker (GPT-6.1 Sol) delivers one logic-heavy goal; the worker takes over when it escalates
+description: Deep worker (GPT-6.2 Sol) delivers one logic-heavy goal; the worker takes over when it escalates
 ---
 Use the subagent tool to run the "deep-worker" agent with this task: $@
 
