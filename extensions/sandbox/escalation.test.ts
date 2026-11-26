@@ -968,8 +968,10 @@ test("host rating: decisions belong to the session that asked; a restart makes t
 			const both = [ask({ host: "h1", port: 443 }), ask({ host: "h1", port: 443 })];
 			await until(() => s.hostCalls.length === n + 1);
 			await s.restart();
+			// Settled by the restart itself, before the verdict arrives: an old request must not wait for its rating.
+			const late = new Promise((_, rej) => setTimeout(() => rej(new Error("old requests still waiting for their rating after the restart")), 1000));
+			assert.deepEqual(await Promise.race([Promise.all(both), late]), [false, false]);
 			hostRating.release(v);
-			assert.deepEqual(await Promise.all(both), [false, false]);
 			await new Promise((r) => setTimeout(r, 20));
 			assert.equal(s.hostCalls.length, n + 1, "one rating for both");
 			assert.equal(allowedNote(), false);
