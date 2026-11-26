@@ -818,6 +818,45 @@ test("rated rules: an abort while the rating or the confirm is pending blocks wi
 	}
 });
 
+test("rated rules: a low verdict or a Yes that arrives after its session ended is blocked and leaves no mark for the next session", async () => {
+	const u = fakeUI();
+	let rating = deferred();
+	const s = await escalating({ ui: u.ui, judge: () => rating.p });
+	const C = `: 'git push'; if [ -n "$IN_SANDBOX" ]; then echo IN-BOX; else echo NO-BOX; fi`;
+	const exec = async (args: object) => (await s.tools.bash.execute("t", args, undefined, undefined, s.ctx)).content.map((c: any) => c.text).join("");
+	try {
+		// A LOW verdict that lands in the next session.
+		const args = { command: C, description: "" };
+		let gated = s.gate("bash", args);
+		await until(() => s.calls.length === 1);
+		await s.restart();
+		rating.release(LOW);
+		assert.match((await gated)!.reason, /the session ended while this was pending/);
+		assert.equal(u.notes.filter(([m]) => /allowed \(risk low/.test(m)).length, 0);
+		// Its args carry no mark: run off in the new session, it is an ordinary call (no late prompt).
+		await s.commands.sandbox.handler("off", { hasUI: true, ui: { confirm: async () => true, notify: () => {} } });
+		assert.match(await exec(args), /^NO-BOX\n$/);
+		assert.equal(u.confirms.length, 0);
+		await s.commands.sandbox.handler("on", { hasUI: true, ui: { confirm: async () => true, notify: () => {} } });
+		// A HIGH verdict whose confirm is answered Yes after the restart.
+		rating = deferred();
+		const answer = deferred();
+		u.answer = () => answer.p as Promise<boolean>;
+		gated = s.gate("bash", { command: C, description: "" });
+		await until(() => s.calls.length === 2);
+		rating.release(HIGH);
+		await until(() => u.confirms.length === 1);
+		await s.restart();
+		answer.release(true);
+		assert.match((await gated)!.reason, /the session ended while this was pending/);
+		await s.run(F);
+		assert.deepEqual(s.calls.at(-1).approved, [], "no approval recorded in the new session");
+	} finally {
+		await s.shutdown();
+		restore();
+	}
+});
+
 test("rated rules: a low verdict holds only for its own tool call run inside the sandbox; with the sandbox off by then it asks again", async () => {
 	const u = fakeUI();
 	let verdict: unknown = LOW;

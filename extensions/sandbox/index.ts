@@ -561,12 +561,16 @@ export default function (pi: ExtensionAPI) {
 		const aborted = () => ({ block: true as const, reason: "sandbox: operation aborted" });
 		if (signal?.aborted) return aborted();
 		let why = r;
+		// Captured before any await: a verdict or a Yes that arrives after its session ended allows nothing in the next one.
+		const mine = sessionAc.signal;
+		const ended = () => ({ block: true as const, reason: "sandbox: the session ended while this was pending; run it again" });
 		if (!off && !readOnly && RATED.has(r) && process.env.PI_SANDBOX_ESCALATE !== "off") {
 			const v = await rate(() => seam.judge({ command, cwd: ctx.cwd, root: process.env.PI_SANDBOX_ROOT, rule: r, ...context() }, signal));
 			if (signal?.aborted) return aborted();
+			if (mine.aborted) return ended();
 			// A low verdict assumed the command runs sandboxed; after a /sandbox off during the rating it gets the plain confirm.
 			if (v.risk === "low" && !off) {
-				marks.set(event.input, { command, token: sessionAc.signal });
+				marks.set(event.input, { command, token: mine });
 				if (ctx.hasUI) ctx.ui.notify(`sandbox: ${r}, allowed (risk low: ${v.reason}): ${command.slice(0, 200)}`, "warning");
 				return;
 			}
@@ -575,6 +579,7 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.hasUI) return { block: true, reason: `${why}, which needs the user's confirmation and this pi has no UI: ask the user to run it themselves` };
 		const ok = await ctx.ui.confirm("Sandbox: confirm", `${why}. Allow it?`, { signal });
 		if (signal?.aborted) return aborted();
+		if (mine.aborted) return ended();
 		if (!ok) return { block: true, reason: `the user declined: ${r}` };
 		if (RATED.has(r)) approve(`${r}: ${command.slice(0, 200)}`);
 	});
